@@ -52,7 +52,7 @@ ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
 # Khi bấm "Xác thực", Zalo sẽ hiện mã meta tag, copy content vào đây
 ZALO_VERIFICATION_CODE = os.getenv(
     "ZALO_VERIFICATION_CODE",
-    "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t"
+    "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZOt"
 )
 
 # Rate limiting (in-memory, same as Telegram bot)
