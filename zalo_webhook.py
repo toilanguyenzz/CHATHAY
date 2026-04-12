@@ -146,31 +146,25 @@ async def send_file_message(user_id: str, file_path: str, file_type: str = "voic
         return response.json()
 
 
-async def download_zalo_file(token: str, save_path: str) -> bool:
-    """Download a file from Zalo using the attachment token."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Get file URL from Zalo
-        response = await client.get(
-            f"{ZALO_API_URL}/getfile",
-            headers={"access_token": ZALO_OA_ACCESS_TOKEN},
-            params={"token": token},
-        )
-        result = response.json()
+async def download_zalo_file(file_url: str, save_path: str) -> bool:
+    """Download a file from Zalo using the direct URL from webhook payload."""
+    if not file_url:
+        logger.error("No file URL provided")
+        return False
 
-        if result.get("error") != 0:
-            logger.error(f"Get file URL failed: {result}")
-            return False
-
-        file_url = result.get("data", {}).get("url")
-        if not file_url:
-            return False
-
-        # Download the file
-        file_response = await client.get(file_url)
-        if file_response.status_code == 200:
-            with open(save_path, "wb") as f:
-                f.write(file_response.content)
-            return True
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        try:
+            logger.info(f"Downloading file from: {file_url[:80]}...")
+            file_response = await client.get(file_url)
+            if file_response.status_code == 200:
+                with open(save_path, "wb") as f:
+                    f.write(file_response.content)
+                logger.info(f"File downloaded: {len(file_response.content)} bytes")
+                return True
+            else:
+                logger.error(f"Download failed with status: {file_response.status_code}")
+        except Exception as e:
+            logger.error(f"Download error: {e}")
 
     return False
 
@@ -309,10 +303,11 @@ async def process_webhook_event(body: dict):
             attachments = body.get("message", {}).get("attachments", [])
             if attachments:
                 payload = attachments[0].get("payload", {})
-                token = payload.get("token", "")
+                file_url = payload.get("url", "")
                 file_name = payload.get("name", "document")
                 file_size = payload.get("size", 0)
-                await handle_zalo_file(sender_id, token, file_name, file_size)
+                logger.info(f"File received: {file_name}, size={file_size}, url={file_url[:60] if file_url else 'NONE'}")
+                await handle_zalo_file(sender_id, file_url, file_name, file_size)
 
         elif event_name == "unfollow":
             logger.info(f"User {sender_id} unfollowed OA")
@@ -412,7 +407,7 @@ async def handle_zalo_text(user_id: str, text: str):
         )
 
 
-async def handle_zalo_file(user_id: str, token: str, file_name: str, file_size):
+async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_size):
     """Handle file attachments from Zalo."""
     # Zalo có thể gửi file_size dạng string, cần convert
     try:
@@ -447,7 +442,7 @@ async def handle_zalo_file(user_id: str, token: str, file_name: str, file_size):
 
     try:
         # Download file from Zalo
-        success = await download_zalo_file(token, file_path)
+        success = await download_zalo_file(file_url, file_path)
         if not success:
             await send_text_message(user_id, "Khong the tai file. Vui long gui lai!")
             return
