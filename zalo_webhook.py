@@ -6,6 +6,11 @@ Cách hoạt động:
 1. User gửi file/ảnh qua Zalo OA
 2. Zalo gọi webhook URL của bạn
 3. Server xử lý file → AI tóm tắt → TTS → gửi lại qua Zalo OA API
+
+Xác thực domain:
+- Meta tag trên trang chủ (GET /)
+- File xác thực tại /verifierXXXX.html
+- Webhook URL phải trả 200 OK cho GET request
 """
 
 import os
@@ -16,11 +21,13 @@ import time
 import uuid
 import hashlib
 import hmac
+import asyncio
 from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import config
 from services.document_parser import extract_text, get_file_type
@@ -34,10 +41,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Zalo OA config — add these to your .env when ready
+# Zalo OA config
 ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
+ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
 ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
+
+# ===== DOMAIN VERIFICATION CONFIG =====
+# Lấy mã này từ trang Zalo Developers > Xác thực domain
+# Khi bấm "Xác thực", Zalo sẽ hiện mã meta tag, copy content vào đây
+ZALO_VERIFICATION_CODE = os.getenv(
+    "ZALO_VERIFICATION_CODE",
+    "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t"
+)
 
 # Rate limiting (in-memory, same as Telegram bot)
 user_daily_usage: dict[str, dict] = {}
@@ -57,6 +73,27 @@ def increment_usage(user_id: str):
     if user_id not in user_daily_usage or user_daily_usage[user_id]["date"] != today:
         user_daily_usage[user_id] = {"date": today, "count": 0}
     user_daily_usage[user_id]["count"] += 1
+
+
+def verify_zalo_signature(request_body: bytes, mac_header: str) -> bool:
+    """
+    Xác thực chữ ký webhook từ Zalo.
+    Zalo gửi header 'mac' = HMAC-SHA256(OA_SECRET, request_body)
+    """
+    if not ZALO_OA_SECRET or not mac_header:
+        logger.warning("Skipping signature verification (no secret or no mac header)")
+        return True  # Skip nếu chưa config
+
+    expected = hmac.new(
+        ZALO_OA_SECRET.encode("utf-8"),
+        request_body,
+        hashlib.sha256
+    ).hexdigest()
+
+    is_valid = hmac.compare_digest(expected, mac_header)
+    if not is_valid:
+        logger.warning(f"Invalid webhook signature! Expected: {expected[:16]}..., Got: {mac_header[:16]}...")
+    return is_valid
 
 
 # ===== ZALO OA API HELPERS =====
@@ -151,13 +188,18 @@ async def download_zalo_file(token: str, save_path: str) -> bool:
     return False
 
 
-# ===== WEBHOOK HANDLER =====
+# ===== APP SETUP =====
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App startup/shutdown."""
+    logger.info("=" * 60)
     logger.info("Zalo OA Webhook Server starting...")
     logger.info(f"OA Token set: {'YES' if ZALO_OA_ACCESS_TOKEN else 'NO'}")
+    logger.info(f"OA Secret set: {'YES' if ZALO_OA_SECRET else 'NO'}")
+    logger.info(f"App ID: {ZALO_APP_ID}")
+    logger.info(f"Verification code: {ZALO_VERIFICATION_CODE[:10]}...")
+    logger.info("=" * 60)
     yield
     logger.info("Server shutting down...")
 
@@ -168,39 +210,93 @@ app = FastAPI(
 )
 
 
-@app.get("/")
+# ===== DOMAIN VERIFICATION ENDPOINTS =====
+# Zalo yêu cầu xác thực domain bằng 1 trong 2 cách:
+# 1. Meta tag trong <head> trang chủ
+# 2. File HTML tại root: /zalo_verifier_XXXX.html
+
+VERIFICATION_HTML = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="zalo-platform-site-verification" content="{ZALO_VERIFICATION_CODE}" />
+    <title>Zalo Doc Bot - Trợ lý AI Tài liệu</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background: #f0f2f5; }}
+        .card {{ background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        h1 {{ color: #0068ff; margin-bottom: 10px; }}
+        .status {{ color: #00c851; font-weight: bold; }}
+        .info {{ color: #666; font-size: 14px; margin-top: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>📄 Zalo Doc Bot</h1>
+        <p class="status">✅ Server is running!</p>
+        <p>Trợ lý AI tóm tắt tài liệu qua Zalo OA</p>
+        <div class="info">
+            <p>📌 App ID: {ZALO_APP_ID}</p>
+            <p>🔗 Webhook: POST /webhook/zalo</p>
+            <p>🔒 Domain verified by Zalo Platform</p>
+        </div>
+    </div>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
 async def health():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "zalo-doc-bot", "version": "1.0"}
+    """
+    Trang chủ — chứa meta tag xác thực domain.
+    Zalo sẽ kiểm tra meta tag 'zalo-platform-site-verification' tại đây.
+    """
+    return HTMLResponse(content=VERIFICATION_HTML, status_code=200)
 
 
-@app.post("/webhook/zalo")
-async def zalo_webhook(request: Request):
+@app.get(f"/zalo_verifier{ZALO_VERIFICATION_CODE}.html", response_class=HTMLResponse)
+async def zalo_verifier_file_exact():
     """
-    Handle incoming events from Zalo OA.
-    
-    Zalo sends events for:
-    - user_send_text: User sends text message
-    - user_send_image: User sends image
-    - user_send_file: User sends file (PDF, docx, etc.)
-    - follow/unfollow: User follows/unfollows OA
+    File xác thực domain — URL chính xác mà Zalo kiểm tra.
+    URL: https://chathay-production.up.railway.app/zalo_verifierVyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t.html
     """
+    return HTMLResponse(
+        content=VERIFICATION_HTML,
+        status_code=200,
+    )
+
+
+# ===== WEBHOOK ENDPOINTS =====
+
+@app.get("/webhook/zalo")
+async def webhook_verify():
+    """
+    GET endpoint cho webhook — Zalo gửi GET request để verify URL.
+    Phải trả về HTTP 200 OK.
+    """
+    return JSONResponse(
+        content={"status": "ok", "message": "Zalo webhook is active"},
+        status_code=200,
+    )
+
+
+async def process_webhook_event(body: dict):
+    """Background task xử lý webhook event (để trả 200 nhanh cho Zalo)."""
     try:
-        body = await request.json()
         event_name = body.get("event_name", "")
         sender_id = body.get("sender", {}).get("id", "")
 
-        logger.info(f"Webhook event: {event_name} from {sender_id}")
+        logger.info(f"Processing event: {event_name} from {sender_id}")
 
         if event_name == "follow":
             # New follower — send welcome
             await send_text_message(sender_id, (
-                "Xin chao! Toi la Tro ly AI Tai lieu.\n\n"
-                "Gui cho toi bat ky file nao:\n"
-                "- PDF, Word (.docx)\n"
-                "- Anh chup tai lieu\n\n"
-                "Toi se tom tat thanh 5 y chinh va doc to bang giong noi tieng Viet!\n\n"
-                f"Mien phi {config.FREE_DAILY_LIMIT} tai lieu/ngay."
+                "Xin chào! Tôi là Trợ lý AI Tài liệu 📄\n\n"
+                "Gửi cho tôi bất kỳ file nào:\n"
+                "• PDF, Word (.docx)\n"
+                "• Ảnh chụp tài liệu\n\n"
+                "Tôi sẽ tóm tắt thành 5 ý chính và đọc to bằng giọng nói tiếng Việt!\n\n"
+                f"Miễn phí {config.FREE_DAILY_LIMIT} tài liệu/ngày."
             ))
 
         elif event_name == "user_send_text":
@@ -222,11 +318,65 @@ async def zalo_webhook(request: Request):
                 file_size = payload.get("size", 0)
                 await handle_zalo_file(sender_id, token, file_name, file_size)
 
-        return {"status": "ok"}
+        elif event_name == "unfollow":
+            logger.info(f"User {sender_id} unfollowed OA")
+
+        else:
+            logger.info(f"Unhandled event: {event_name}")
 
     except Exception as e:
+        logger.error(f"Error processing event: {e}", exc_info=True)
+
+
+@app.post("/webhook/zalo")
+async def zalo_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Handle incoming events from Zalo OA.
+    
+    QUAN TRỌNG: Phải trả về 200 OK trong vòng 5 giây,
+    nếu không Zalo sẽ retry và có thể disable webhook.
+    → Dùng BackgroundTasks để xử lý async.
+    
+    Zalo sends events for:
+    - user_send_text: User sends text message
+    - user_send_image: User sends image
+    - user_send_file: User sends file (PDF, docx, etc.)
+    - follow/unfollow: User follows/unfollows OA
+    """
+    try:
+        # Đọc raw body để verify signature
+        raw_body = await request.body()
+
+        # Verify webhook signature (nếu có OA Secret)
+        mac_header = request.headers.get("mac", "")
+        if ZALO_OA_SECRET and mac_header:
+            if not verify_zalo_signature(raw_body, mac_header):
+                logger.warning("Webhook signature verification FAILED!")
+                raise HTTPException(status_code=403, detail="Invalid signature")
+
+        body = json.loads(raw_body)
+        event_name = body.get("event_name", "")
+        sender_id = body.get("sender", {}).get("id", "unknown")
+
+        logger.info(f"Webhook received: {event_name} from {sender_id}")
+
+        # Xử lý trong background để trả 200 nhanh
+        background_tasks.add_task(process_webhook_event, body)
+
+        return JSONResponse(
+            content={"status": "ok"},
+            status_code=200,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
         logger.error(f"Webhook error: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+        # Vẫn trả 200 để Zalo không retry
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=200,
+        )
 
 
 # ===== MESSAGE HANDLERS =====
