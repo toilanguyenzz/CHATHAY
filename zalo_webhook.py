@@ -28,6 +28,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import config
 from services.document_parser import extract_text, get_file_type
@@ -46,6 +47,7 @@ ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
 ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
+ZALO_UPLOAD_FILE_URL = "https://openapi.zalo.me/v2.0/oa/upload/file"
 
 # ===== DOMAIN VERIFICATION CONFIG =====
 # Lấy mã này từ trang Zalo Developers > Xác thực domain
@@ -110,11 +112,10 @@ async def send_file_message(user_id: str, file_path: str, file_type: str = "voic
     Send a file (audio/image/file) to a Zalo user.
     For voice messages, Zalo requires uploading first.
     """
-    # Step 1: Upload file to Zalo
     async with httpx.AsyncClient(timeout=30.0) as client:
         with open(file_path, "rb") as f:
             upload_response = await client.post(
-                "https://openapi.zalo.me/v2.0/oa/upload/file",
+                ZALO_UPLOAD_FILE_URL,
                 headers={"access_token": ZALO_OA_ACCESS_TOKEN},
                 files={"file": (os.path.basename(file_path), f, "audio/mpeg")},
             )
@@ -124,9 +125,16 @@ async def send_file_message(user_id: str, file_path: str, file_type: str = "voic
             logger.error(f"Zalo upload failed: {upload_result}")
             return None
 
-        attachment_id = upload_result.get("data", {}).get("attachment_id")
+        upload_data = upload_result.get("data", {}) or {}
+        file_token = (
+            upload_data.get("file_token")
+            or upload_data.get("token")
+            or upload_data.get("attachment_id")
+        )
+        if not file_token:
+            logger.error(f"Zalo upload missing file token: {upload_result}")
+            return None
 
-        # Step 2: Send the uploaded file as message
         response = await client.post(
             f"{ZALO_API_URL}/message/cs",
             headers={
@@ -138,12 +146,16 @@ async def send_file_message(user_id: str, file_path: str, file_type: str = "voic
                 "message": {
                     "attachment": {
                         "type": "file",
-                        "payload": {"token": attachment_id},
+                        "payload": {"token": file_token},
                     }
                 },
             },
         )
-        return response.json()
+        result = response.json()
+        if result.get("error") != 0:
+            logger.error(f"Zalo send file failed: {result}")
+            return None
+        return result
 
 
 async def download_zalo_file(file_url: str, save_path: str) -> bool:
@@ -189,6 +201,14 @@ app = FastAPI(
     title="Zalo Doc Bot — Webhook Server",
     lifespan=lifespan,
 )
+
+# Serve static audio files so users can listen via URL
+app.mount("/audio", StaticFiles(directory=config.AUDIO_DIR), name="audio")
+
+async def delayed_cleanup(audio_path: str, delay: int = 3600):
+    """Giữ file audio 1 tiếng để user có thời gian nghe, sau đó tự xóa."""
+    await asyncio.sleep(delay)
+    await cleanup_audio(audio_path)
 
 
 # ===== DOMAIN VERIFICATION ENDPOINTS =====
@@ -399,8 +419,10 @@ async def handle_zalo_text(user_id: str, text: str):
             clean = summary.replace("**", "").replace("*", "")
             audio_path = await text_to_speech(clean)
             if audio_path:
-                await send_file_message(user_id, audio_path)
-                await cleanup_audio(audio_path)
+                audio_filename = os.path.basename(audio_path)
+                audio_url = f"https://chathay-production.up.railway.app/audio/{audio_filename}"
+                await send_text_message(user_id, f"🎧 Nhấn vào link này để nghe bản đọc Audio:\n{audio_url}")
+                asyncio.create_task(delayed_cleanup(audio_path))
     else:
         await send_text_message(user_id,
             "Gui file hoac anh tai lieu cho toi de duoc tom tat!"
@@ -472,8 +494,10 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             clean = summary.replace("**", "").replace("*", "")
             audio_path = await text_to_speech(clean)
             if audio_path:
-                await send_file_message(user_id, audio_path)
-                await cleanup_audio(audio_path)
+                audio_filename = os.path.basename(audio_path)
+                audio_url = f"https://chathay-production.up.railway.app/audio/{audio_filename}"
+                await send_text_message(user_id, f"🎧 Nhấn vào link này để nghe bản đọc Audio:\n{audio_url}")
+                asyncio.create_task(delayed_cleanup(audio_path))
 
         increment_usage(user_id)
 
@@ -525,8 +549,10 @@ async def handle_zalo_image(user_id: str, image_url: str):
             clean = summary.replace("**", "").replace("*", "")
             audio_path = await text_to_speech(clean)
             if audio_path:
-                await send_file_message(user_id, audio_path)
-                await cleanup_audio(audio_path)
+                audio_filename = os.path.basename(audio_path)
+                audio_url = f"https://chathay-production.up.railway.app/audio/{audio_filename}"
+                await send_text_message(user_id, f"🎧 Nhấn vào link này để nghe bản đọc Audio:\n{audio_url}")
+                asyncio.create_task(delayed_cleanup(audio_path))
 
         increment_usage(user_id)
 

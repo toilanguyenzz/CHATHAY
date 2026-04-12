@@ -103,7 +103,10 @@ async def summarize_text(text: str, doc_type: str = None) -> str:
         return summary
 
     except Exception as e:
-        logger.error(f"Summarization failed: {e}")
+        error_msg = str(e)
+        logger.error(f"Summarization failed: {error_msg}")
+        if "429" in error_msg or "Quota exceeded" in error_msg:
+            return "❌ Hệ thống AI đang quá tải lượt dùng miễn phí (Google Limit). Bạn vui lòng thử lại sau 1 phút nữa nhé!"
         return "❌ Xin lỗi, tôi không thể tóm tắt tài liệu này. Vui lòng thử lại sau."
 
 
@@ -137,5 +140,8 @@ Tổng độ dài bắt buộc phải đạt ít nhất 800 chữ. Hãy mô tả
         return summary
 
     except Exception as e:
-        logger.error(f"Image summarization failed: {e}")
+        error_msg = str(e)
+        logger.error(f"Image summarization failed: {error_msg}")
+        if "429" in error_msg or "Quota exceeded" in error_msg:
+            return "❌ Hệ thống AI đang quá tải lượt dùng miễn phí (Google Limit). Bạn vui lòng thử lại sau 1 phút nữa nhé!"
         return "❌ Xin lỗi, tôi không thể đọc được nội dung trong ảnh. Vui lòng chụp ảnh rõ hơn và thử lại."
