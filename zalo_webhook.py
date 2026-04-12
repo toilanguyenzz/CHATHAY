@@ -212,36 +212,45 @@ app = FastAPI(
 
 # ===== DOMAIN VERIFICATION ENDPOINTS =====
 # Zalo yêu cầu xác thực domain bằng 1 trong 2 cách:
-# 1. Meta tag trong <head> trang chủ
-# 2. File HTML tại root: /zalo_verifier_XXXX.html
+# 1. Meta tag trong <head> trang chủ (phải ĐẦU TIÊN trong <head>)
+# 2. File HTML tại root: /zalo_verifierXXXX.html
 
-VERIFICATION_HTML = f"""<!DOCTYPE html>
+# HTML cho trang chủ — meta tag verification PHẢI ở đầu <head>
+HOMEPAGE_HTML = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="zalo-platform-site-verification" content="{ZALO_VERIFICATION_CODE}" />
-    <title>Zalo Doc Bot - Trợ lý AI Tài liệu</title>
-    <style>
-        body {{ font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background: #f0f2f5; }}
-        .card {{ background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        h1 {{ color: #0068ff; margin-bottom: 10px; }}
-        .status {{ color: #00c851; font-weight: bold; }}
-        .info {{ color: #666; font-size: 14px; margin-top: 20px; }}
-    </style>
+<meta name="zalo-platform-site-verification" content="{ZALO_VERIFICATION_CODE}" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zalo Doc Bot</title>
+<style>
+body {{ font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background: #f0f2f5; }}
+.card {{ background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+h1 {{ color: #0068ff; margin-bottom: 10px; }}
+.status {{ color: #00c851; font-weight: bold; }}
+.info {{ color: #666; font-size: 14px; margin-top: 20px; }}
+</style>
 </head>
 <body>
-    <div class="card">
-        <h1>📄 Zalo Doc Bot</h1>
-        <p class="status">✅ Server is running!</p>
-        <p>Trợ lý AI tóm tắt tài liệu qua Zalo OA</p>
-        <div class="info">
-            <p>📌 App ID: {ZALO_APP_ID}</p>
-            <p>🔗 Webhook: POST /webhook/zalo</p>
-            <p>🔒 Domain verified by Zalo Platform</p>
-        </div>
-    </div>
+<div class="card">
+<h1>Zalo Doc Bot</h1>
+<p class="status">Server is running!</p>
+<p>Tro ly AI tom tat tai lieu qua Zalo OA</p>
+<div class="info">
+<p>App ID: {ZALO_APP_ID}</p>
+<p>Webhook: POST /webhook/zalo</p>
+</div>
+</div>
 </body>
+</html>"""
+
+# HTML cho file verification — nội dung TỐI GIẢN, chỉ chứa verification code
+VERIFIER_HTML = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta name="zalo-platform-site-verification" content="{ZALO_VERIFICATION_CODE}" />
+</head>
+<body>{ZALO_VERIFICATION_CODE}</body>
 </html>"""
 
 
@@ -249,19 +258,19 @@ VERIFICATION_HTML = f"""<!DOCTYPE html>
 async def health():
     """
     Trang chủ — chứa meta tag xác thực domain.
-    Zalo sẽ kiểm tra meta tag 'zalo-platform-site-verification' tại đây.
+    Meta tag 'zalo-platform-site-verification' đặt ĐẦU TIÊN trong <head>.
     """
-    return HTMLResponse(content=VERIFICATION_HTML, status_code=200)
+    return HTMLResponse(content=HOMEPAGE_HTML, status_code=200)
 
 
 @app.get(f"/zalo_verifier{ZALO_VERIFICATION_CODE}.html", response_class=HTMLResponse)
 async def zalo_verifier_file_exact():
     """
-    File xác thực domain — URL chính xác mà Zalo kiểm tra.
+    File xác thực domain — nội dung tối giản chỉ chứa verification code.
     URL: https://chathay-production.up.railway.app/zalo_verifierVyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t.html
     """
     return HTMLResponse(
-        content=VERIFICATION_HTML,
+        content=VERIFIER_HTML,
         status_code=200,
     )
 
