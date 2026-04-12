@@ -114,7 +114,7 @@ async def send_file_message(user_id: str, file_path: str, file_type: str = "voic
     async with httpx.AsyncClient(timeout=30.0) as client:
         with open(file_path, "rb") as f:
             upload_response = await client.post(
-                f"{ZALO_API_URL}/upload/file",
+                "https://openapi.zalo.me/v2.0/oa/upload/file",
                 headers={"access_token": ZALO_OA_ACCESS_TOKEN},
                 files={"file": (os.path.basename(file_path), f, "audio/mpeg")},
             )

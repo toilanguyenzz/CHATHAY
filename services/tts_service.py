@@ -85,9 +85,9 @@ async def _tts_single_chunk(client: httpx.AsyncClient, text: str, voice: str) ->
             logger.error(f"No audio URL in response: {result}")
             return None
 
-        # Đợi FPT xử lý (thường 2-5 giây)
-        for attempt in range(4):
-            await asyncio.sleep(2 + attempt)
+        # Đợi FPT xử lý 
+        for attempt in range(10):
+            await asyncio.sleep(3)
             audio_response = await client.get(audio_url)
             if audio_response.status_code == 200 and len(audio_response.content) > 100:
                 return audio_response.content
