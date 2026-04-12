@@ -412,8 +412,14 @@ async def handle_zalo_text(user_id: str, text: str):
         )
 
 
-async def handle_zalo_file(user_id: str, token: str, file_name: str, file_size: int):
+async def handle_zalo_file(user_id: str, token: str, file_name: str, file_size):
     """Handle file attachments from Zalo."""
+    # Zalo có thể gửi file_size dạng string, cần convert
+    try:
+        file_size = int(file_size)
+    except (ValueError, TypeError):
+        file_size = 0
+
     if not check_rate_limit(user_id):
         await send_text_message(user_id,
             f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay."
