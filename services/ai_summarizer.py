@@ -230,6 +230,7 @@ def _build_text_prompt(text: str) -> str:
     return f"""Tom tat tai lieu thanh JSON:
 {{"document_title":"ten","overview":"1-2 cau","points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"3-5 cau giai thich"}}]}}
 Bat buoc 5 points. Neu co so lieu/ngay thang/ten rieng thi dua vao detail. Chi tra ve JSON.
+LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT ĐƠN GIẢN, DÙ TÀI LIỆU GỐC LÀ TIẾNG GÌ.
 
 {text}"""
 
@@ -237,7 +238,8 @@ Bat buoc 5 points. Neu co so lieu/ngay thang/ten rieng thi dua vao detail. Chi t
 def _build_image_prompt() -> str:
     return """Doc anh, tra ve JSON:
 {"document_title":"chu de","overview":"1-2 cau","points":[{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"3-5 cau giai thich"}]}
-Bat buoc 5 points. Dua so lieu/ngay thang/ten rieng vao detail. Chi tra ve JSON."""
+Bat buoc 5 points. Dua so lieu/ngay thang/ten rieng vao detail. Chi tra ve JSON.
+LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT ĐƠN GIẢN, DÙ TÀI LIỆU GỐC LÀ TIẾNG GÌ."""
 
 
 # ===== CORE API CALLS =====

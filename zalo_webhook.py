@@ -118,32 +118,30 @@ def split_message_for_zalo(text: str, limit: int = ZALO_TEXT_LIMIT) -> list[str]
 
 def format_summary_menu(title: str, structured_summary: dict[str, Any], elapsed_seconds: float | None = None) -> str:
     lines: list[str] = []
-    if title:
-        lines.append(f"Tom tat tai lieu: {title}")
+    lines.append(f"Đọc xong rồi! Đây là bản tóm tắt tài liệu '{title}' của bạn:")
     if elapsed_seconds is not None:
-        lines.append(f"Xu ly trong {elapsed_seconds:.0f} giay")
+        lines.append(f"(Xử lý trong {elapsed_seconds:.0f} giây)")
+    lines.append("")
 
     overview = structured_summary.get("overview", "")
     if overview:
-        lines.append(f"Tong quan: {overview}")
+        lines.append(f"📌 Tổng quan: {overview}\n")
 
-    lines.append("5 y chinh:")
+    lines.append("5 ý chính:")
     for point in structured_summary.get("points", [])[:5]:
-        lines.append(f"{point['index']}. {point['title']}: {clean_preview_text(point['brief'])}")
+        lines.append(f"🔹 {point['index']}. {point['title']}: {clean_preview_text(point['brief'])}")
 
     lines.append("")
-    lines.append("Nhan 1-5 de xem ky hon tung y.")
-    lines.append("Neu muon nghe audio, nhan: NGHE 1, NGHE 2, ..., NGHE 5")
+    lines.append("Bấm số 1–5 để nghe giải thích chi tiết từng ý.\nHoặc gõ câu hỏi bất kỳ về tài liệu này.")
     return "\n".join(lines)
 
 
 def format_point_detail(structured_summary: dict[str, Any], point_index: int) -> str:
     point = structured_summary["points"][point_index - 1]
     return (
-        f"Y {point_index}: {point['title']}\n"
-        f"Tom tat nhanh: {point['brief']}\n\n"
-        f"Chi tiet:\n{point['detail']}\n\n"
-        f"Neu muon nghe y nay, nhan: NGHE {point_index}"
+        f"📝 Ý {point_index}: {point['title']}\n\n"
+        f"Chi tiết:\n{point['detail']}\n\n"
+        f"🎧 Để nghe đọc ý này, hãy nhắn: NGHE {point_index}"
     )
 
 
@@ -397,7 +395,7 @@ async def handle_zalo_text(user_id: str, text: str):
         await send_text_message(user_id, f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay. Quay lai ngay mai nhe!")
         return
 
-    await send_text_message(user_id, "Dang tom tat van ban... Vui long doi khoang 15-30 giay.")
+    await send_text_message(user_id, "Bot đang đọc tài liệu của bạn... Vui lòng chờ 15–30 giây nhé.")
     structured = await summarize_text_structured(text)
     if structured.get("error"):
         await send_text_message(user_id, str(structured["error"]))
@@ -426,7 +424,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
         await send_text_message(user_id, "Toi chi ho tro file PDF, Word (.docx), hoac anh. Vui long gui dung dinh dang!")
         return
 
-    await send_text_message(user_id, "Dang xu ly tai lieu cua ban... Vui long doi khoang 15-30 giay.")
+    await send_text_message(user_id, "Bot đang đọc tài liệu của bạn... Vui lòng chờ 15–30 giây nhé.")
     start_time = time.time()
     file_path = os.path.join(config.TEMP_DIR, f"{uuid.uuid4().hex}_{file_name}")
 
@@ -461,7 +459,7 @@ async def handle_zalo_image(user_id: str, image_url: str):
         await send_text_message(user_id, f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay.")
         return
 
-    await send_text_message(user_id, "Dang doc noi dung anh... Vui long doi khoang 15-30 giay.")
+    await send_text_message(user_id, "Bot đang đọc ảnh của bạn... Vui lòng chờ 15–30 giây nhé.")
     start_time = time.time()
     image_path = os.path.join(config.TEMP_DIR, f"{uuid.uuid4().hex}.jpg")
 
