@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Read AI — Tóm Tắt Tài Liệu Bằng AI</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e1a;
+  --surface: #131829;
+  --surface2: #1a2035;
+  --accent: #6c5ce7;
+  --accent2: #a29bfe;
+  --success: #00cec9;
+  --text: #f0f0f5;
+  --text2: #8892b0;
+  --border: #2d3555;
+  --danger: #ff6b6b;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Animated BG */
+body::before {
+  content: '';
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(108,92,231,.12) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(0,206,201,.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(162,155,254,.06) 0%, transparent 50%);
+  pointer-events: none; z-index: 0;
+}
+
+.container { max-width: 780px; margin: 0 auto; padding: 40px 20px; position: relative; z-index: 1; }
+
+/* Header */
+.header { text-align: center; margin-bottom: 40px; }
+.header .logo {
+  font-size: 42px; font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), var(--success));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  letter-spacing: -1px;
+}
+.header .tagline { color: var(--text2); font-size: 16px; margin-top: 8px; }
+
+/* Drop zone */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 20px;
+  padding: 60px 40px;
+  text-align: center;
+  background: var(--surface);
+  transition: all .3s ease;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+.dropzone::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(108,92,231,.05), rgba(0,206,201,.05));
+  opacity: 0; transition: opacity .3s;
+}
+.dropzone:hover, .dropzone.drag-over {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(108,92,231,.2);
+}
+.dropzone:hover::before, .dropzone.drag-over::before { opacity: 1; }
+.dropzone .icon { font-size: 56px; margin-bottom: 16px; }
+.dropzone h2 { font-size: 20px; font-weight: 600; margin-bottom: 8px; position: relative; }
+.dropzone p { color: var(--text2); font-size: 14px; position: relative; }
+.dropzone .formats {
+  display: inline-flex; gap: 8px; margin-top: 16px; position: relative;
+}
+.dropzone .formats span {
+  background: var(--surface2); border: 1px solid var(--border);
+  padding: 4px 12px; border-radius: 20px; font-size: 12px; color: var(--text2);
+}
+.file-input { display: none; }
+
+/* File selected banner */
+.file-selected {
+  display: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-top: 16px;
+  align-items: center; gap: 12px;
+}
+.file-selected.show { display: flex; }
+.file-selected .file-icon { font-size: 32px; }
+.file-selected .file-info { flex: 1; }
+.file-selected .file-name { font-weight: 600; font-size: 14px; }
+.file-selected .file-size { color: var(--text2); font-size: 12px; }
+.file-selected .remove-btn {
+  background: none; border: none; color: var(--danger);
+  cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 8px;
+  transition: background .2s;
+}
+.file-selected .remove-btn:hover { background: rgba(255,107,107,.1); }
+
+/* Submit button */
+.submit-btn {
+  display: none;
+  width: 100%; padding: 16px;
+  background: linear-gradient(135deg, var(--accent), #5f3dc4);
+  color: white; border: none; border-radius: 14px;
+  font-size: 16px; font-weight: 600; cursor: pointer;
+  margin-top: 16px; transition: all .3s;
+  font-family: inherit;
+}
+.submit-btn.show { display: block; }
+.submit-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(108,92,231,.4); }
+.submit-btn:disabled {
+  opacity: .6; cursor: not-allowed;
+  transform: none; box-shadow: none;
+}
+
+/* Loading */
+.loading-section {
+  display: none; text-align: center; padding: 60px 20px;
+}
+.loading-section.show { display: block; }
+.spinner {
+  width: 48px; height: 48px; border-radius: 50%;
+  border: 4px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+  margin: 0 auto 20px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-section p { color: var(--text2); font-size: 15px; }
+
+/* Results */
+.results-section { display: none; margin-top: 32px; }
+.results-section.show { display: block; animation: fadeUp .5s ease; }
+@keyframes fadeUp { from { opacity:0; transform: translateY(20px); } to { opacity:1; transform: translateY(0); } }
+
+.result-header {
+  background: linear-gradient(135deg, var(--surface), var(--surface2));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px; margin-bottom: 16px;
+}
+.result-header .doc-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+.result-header .overview {
+  color: var(--text2); font-size: 14px; line-height: 1.6;
+  padding-left: 12px; border-left: 3px solid var(--accent);
+}
+.result-header .meta { display: flex; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--text2); }
+
+.point-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  transition: all .3s;
+  cursor: pointer;
+}
+.point-card:hover { border-color: var(--accent); transform: translateX(4px); }
+.point-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 20px;
+}
+.point-number {
+  width: 32px; height: 32px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px; flex-shrink: 0;
+}
+.point-title { font-weight: 600; font-size: 15px; flex: 1; }
+.point-toggle { color: var(--text2); transition: transform .3s; font-size: 18px; }
+.point-card.open .point-toggle { transform: rotate(180deg); }
+.point-brief {
+  padding: 0 20px; font-size: 13px; color: var(--text2);
+  padding-bottom: 12px;
+}
+.point-detail {
+  display: none; padding: 0 20px 20px 20px;
+  font-size: 14px; line-height: 1.7; color: var(--text);
+  border-top: 1px solid var(--border);
+  padding-top: 16px; margin: 0 20px;
+  animation: fadeUp .3s ease;
+}
+.point-card.open .point-detail { display: block; }
+
+/* Action buttons */
+.action-bar {
+  display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;
+}
+.action-btn {
+  flex: 1; min-width: 140px; padding: 12px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); border-radius: 12px;
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  transition: all .3s; font-family: inherit;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.action-btn:hover { border-color: var(--accent); background: var(--surface2); }
+.action-btn.primary {
+  background: linear-gradient(135deg, var(--accent), #5f3dc4);
+  border-color: transparent;
+}
+.action-btn.primary:hover { box-shadow: 0 4px 16px rgba(108,92,231,.3); }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%) translateY(100px);
+  background: var(--success); color: #000; padding: 12px 24px;
+  border-radius: 12px; font-weight: 600; font-size: 14px;
+  transition: transform .4s ease; z-index: 999;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .container { padding: 20px 12px; }
+  .dropzone { padding: 40px 20px; }
+  .header .logo { font-size: 32px; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header class="header">
+    <div class="logo">📖 Read AI</div>
+    <p class="tagline">Kéo thả tài liệu — Nhận tóm tắt 5 ý chính trong vài giây</p>
+  </header>
+
+  <div id="uploadSection">
+    <div class="dropzone" id="dropzone">
+      <div class="icon">📄</div>
+      <h2>Kéo thả file vào đây</h2>
+      <p>hoặc bấm để chọn file từ máy tính</p>
+      <div class="formats">
+        <span>PDF</span><span>Word (.docx)</span><span>Ảnh (JPG, PNG)</span>
+      </div>
+      <input type="file" id="fileInput" class="file-input"
+             accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.gif,.bmp,.webp">
+    </div>
+
+    <div class="file-selected" id="fileSelected">
+      <div class="file-icon" id="fileIcon">📄</div>
+      <div class="file-info">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-size" id="fileSize"></div>
+      </div>
+      <button class="remove-btn" id="removeBtn" title="Xóa file">✕</button>
+    </div>
+
+    <button class="submit-btn" id="submitBtn">🚀 Tóm tắt ngay</button>
+  </div>
+
+  <div class="loading-section" id="loadingSection">
+    <div class="spinner"></div>
+    <p>Bot đang đọc tài liệu của bạn...<br>Vui lòng chờ 10–30 giây nhé</p>
+  </div>
+
+  <div class="results-section" id="resultsSection">
+    <div class="result-header">
+      <div class="doc-title" id="docTitle"></div>
+      <div class="overview" id="docOverview"></div>
+      <div class="meta">
+        <span id="metaTime"></span>
+      </div>
+    </div>
+    <div id="pointsList"></div>
+    <div class="action-bar">
+      <button class="action-btn" onclick="copyFullSummary()">📋 Sao chép toàn bộ</button>
+      <button class="action-btn primary" onclick="resetUpload()">📄 Tóm tắt file khác</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fileSelected = document.getElementById('fileSelected');
+const submitBtn = document.getElementById('submitBtn');
+const uploadSection = document.getElementById('uploadSection');
+const loadingSection = document.getElementById('loadingSection');
+const resultsSection = document.getElementById('resultsSection');
+
+let selectedFile = null;
+let currentResult = null;
+
+// File icons
+const FILE_ICONS = {
+  pdf: '📕', docx: '📘', doc: '📘',
+  jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', bmp: '🖼️', webp: '🖼️'
+};
+
+// Drag & drop
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+});
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => { if (e.target.files.length) selectFile(e.target.files[0]); });
+
+document.getElementById('removeBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  selectedFile = null;
+  fileSelected.classList.remove('show');
+  submitBtn.classList.remove('show');
+  fileInput.value = '';
+});
+
+function selectFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const allowed = ['pdf','docx','doc','jpg','jpeg','png','gif','bmp','webp'];
+  if (!allowed.includes(ext)) {
+    showToast('❌ Chỉ hỗ trợ PDF, Word, hoặc ảnh!');
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('❌ File quá lớn! Tối đa 10MB');
+    return;
+  }
+  selectedFile = file;
+  document.getElementById('fileIcon').textContent = FILE_ICONS[ext] || '📄';
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatSize(file.size);
+  fileSelected.classList.add('show');
+  submitBtn.classList.add('show');
+}
+
+submitBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  uploadSection.style.display = 'none';
+  resultsSection.classList.remove('show');
+  loadingSection.classList.add('show');
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  try {
+    const startTime = Date.now();
+    const resp = await fetch('/api/summarize', { method: 'POST', body: formData });
+    const data = await resp.json();
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+
+    if (data.error) {
+      showToast('❌ ' + data.error);
+      resetUpload();
+      return;
+    }
+
+    currentResult = data;
+    renderResults(data, elapsed);
+  } catch (err) {
+    showToast('❌ Lỗi kết nối. Vui lòng thử lại!');
+    resetUpload();
+  }
+});
+
+function renderResults(data, elapsed) {
+  loadingSection.classList.remove('show');
+
+  document.getElementById('docTitle').textContent = '📖 ' + (data.document_title || 'Tài liệu');
+  document.getElementById('docOverview').textContent = data.overview || '';
+  document.getElementById('metaTime').textContent = '⚡ Xử lý trong ' + elapsed + ' giây';
+
+  const list = document.getElementById('pointsList');
+  list.innerHTML = '';
+
+  (data.points || []).forEach((p, i) => {
+    const card = document.createElement('div');
+    card.className = 'point-card';
+    card.innerHTML = `
+      <div class="point-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="point-number">${p.index || i+1}</div>
+        <div class="point-title">${p.title}</div>
+        <div class="point-toggle">▼</div>
+      </div>
+      <div class="point-brief">${p.brief}</div>
+      <div class="point-detail">${p.detail}</div>
+    `;
+    list.appendChild(card);
+  });
+
+  resultsSection.classList.add('show');
+}
+
+function resetUpload() {
+  selectedFile = null;
+  currentResult = null;
+  fileInput.value = '';
+  fileSelected.classList.remove('show');
+  submitBtn.classList.remove('show');
+  loadingSection.classList.remove('show');
+  resultsSection.classList.remove('show');
+  uploadSection.style.display = 'block';
+}
+
+function copyFullSummary() {
+  if (!currentResult) return;
+  const lines = [];
+  lines.push('📖 ' + (currentResult.document_title || 'Tài liệu'));
+  if (currentResult.overview) lines.push('📌 ' + currentResult.overview);
+  lines.push('');
+  (currentResult.points || []).forEach(p => {
+    lines.push(`${p.index}. ${p.title}`);
+    lines.push(p.detail);
+    lines.push('');
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => showToast('✅ Đã sao chép!'));
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>

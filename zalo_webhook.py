@@ -13,7 +13,8 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -255,6 +256,56 @@ async def zalo_verifier():
 @app.get("/webhook/zalo")
 async def webhook_verify():
     return JSONResponse(content={"status": "ok", "message": "Zalo webhook is active"}, status_code=200)
+
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page():
+    """Web Upload Portal — Kéo thả file, nhận tóm tắt AI ngay trên trình duyệt."""
+    html_path = os.path.join(os.path.dirname(__file__), "static", "upload.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
+
+
+@app.post("/api/summarize")
+async def api_summarize(file: UploadFile = File(...)):
+    """API endpoint cho Web Upload Portal. Nhận file, trả JSON tóm tắt."""
+    try:
+        file_name = file.filename or "document"
+        file_type = get_file_type(file_name)
+
+        if file_type == "unknown":
+            return JSONResponse(content={"error": "Chỉ hỗ trợ PDF, Word (.docx), hoặc ảnh."}, status_code=400)
+
+        # Save temp file
+        file_path = os.path.join(config.TEMP_DIR, f"{uuid.uuid4().hex}_{file_name}")
+        content = await file.read()
+
+        if len(content) > config.MAX_FILE_SIZE_MB * 1024 * 1024:
+            return JSONResponse(content={"error": f"File quá lớn! Tối đa {config.MAX_FILE_SIZE_MB}MB."}, status_code=400)
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            if file_type == "image":
+                structured = await summarize_image_structured(file_path)
+            else:
+                text, _ft = await extract_text(file_path, config.MAX_PAGES)
+                if not text:
+                    return JSONResponse(content={"error": "Không đọc được nội dung file này."}, status_code=400)
+                structured = await summarize_text_structured(text)
+
+            if structured.get("error"):
+                return JSONResponse(content={"error": str(structured["error"])}, status_code=500)
+
+            return JSONResponse(content=structured, status_code=200)
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+    except Exception as exc:
+        logger.error("API summarize error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Đã xảy ra lỗi. Vui lòng thử lại!"}, status_code=500)
 
 
 async def send_audio_for_point(user_id: str, point_index: int):
