@@ -24,14 +24,13 @@ GENERIC_IMAGE_ERROR = "Xin loi, toi khong the doc noi dung trong anh luc nay. Ba
 
 def _get_model():
     return genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-1.5-flash",
         generation_config=genai.GenerationConfig(
             temperature=0.2,
             max_output_tokens=4096,
             response_mime_type="application/json",
         ),
     )
-
 
 def _is_quota_error(error: Exception) -> bool:
     message = str(error).lower()
