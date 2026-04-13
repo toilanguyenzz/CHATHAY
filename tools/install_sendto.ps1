@@ -92,41 +92,16 @@ $sc.Description = "Tom tat tai lieu bang AI"
 $sc.Save()
 Write-Host "[OK] Send To shortcut da tao" -ForegroundColor Green
 
-# --- B4: Tao Desktop shortcut mo Web Upload ---
-$desktopDir = [Environment]::GetFolderPath("Desktop")
-$desktopLnk = Join-Path $desktopDir "Read AI.lnk"
 
-$sc2 = $ws.CreateShortcut($desktopLnk)
-$sc2.TargetPath = "$API_URL/upload"
-$sc2.Description = "Mo trang Read AI - Keo tha file de tom tat"
-$sc2.Save()
-Write-Host "[OK] Desktop shortcut da tao" -ForegroundColor Green
-
-# --- B5: Tao alias 'readai' cho Run dialog (Win+R) ---
-$regPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\readai.exe"
-if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-Set-ItemProperty -Path $regPath -Name "(Default)" -Value "cmd.exe"
-Set-ItemProperty -Path $regPath -Name "Path" -Value $appDir
-# Tao bat file
-$batContent = "@echo off`nstart """" ""$API_URL/upload"""
-$batPath = Join-Path $appDir "readai.bat"
-[System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
-Write-Host "[OK] Win+R shortcut 'readai' da tao" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  CAI DAT HOAN TAT!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "3 cach su dung:" -ForegroundColor Yellow
+Write-Host "Cach su dung:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  [1] CHUOT PHAI bat ky file nao" -ForegroundColor White
-Write-Host "      -> Send to -> Read AI" -ForegroundColor Gray
-Write-Host "      -> Tu dong tom tat va hien ket qua" -ForegroundColor Gray
-Write-Host ""
-Write-Host "  [2] DOUBLE-CLICK icon 'Read AI' tren Desktop" -ForegroundColor White
-Write-Host "      -> Keo tha file vao trang web" -ForegroundColor Gray
-Write-Host ""
-Write-Host "  [3] Bam Win+R, go 'readai', Enter" -ForegroundColor White
-Write-Host "      -> Mo nhanh trang Upload Portal" -ForegroundColor Gray
+Write-Host "  CHUOT PHAI vao bat ky file tai lieu nao" -ForegroundColor White
+Write-Host "  -> Chon 'Send to' (Goi den) -> Read AI" -ForegroundColor Gray
+Write-Host "  -> Tu dong tom tat va hien ket qua ngay lap tuc!" -ForegroundColor Gray
 Write-Host ""

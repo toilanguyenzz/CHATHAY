@@ -132,8 +132,6 @@ def format_summary_menu(title: str, structured_summary: dict[str, Any], elapsed_
     for point in structured_summary.get("points", [])[:5]:
         lines.append(f"🔹 {point['index']}. {point['title']}: {clean_preview_text(point['brief'])}")
 
-    lines.append("")
-    lines.append("Bấm số 1–5 để nghe giải thích chi tiết từng ý.\nHoặc gõ câu hỏi bất kỳ về tài liệu này.")
     return "\n".join(lines)
 
 
@@ -141,8 +139,7 @@ def format_point_detail(structured_summary: dict[str, Any], point_index: int) ->
     point = structured_summary["points"][point_index - 1]
     return (
         f"📝 Ý {point_index}: {point['title']}\n\n"
-        f"Chi tiết:\n{point['detail']}\n\n"
-        f"🎧 Để nghe đọc ý này, hãy nhắn: NGHE {point_index}"
+        f"Chi tiết:\n{point['detail']}"
     )
 
 
@@ -177,9 +174,54 @@ async def send_text_message(user_id: str, text: str):
     return result
 
 
-async def send_long_text_message(user_id: str, text: str):
-    for chunk in split_message_for_zalo(text):
-        await send_text_message(user_id, chunk)
+async def send_text_with_buttons(user_id: str, text: str, buttons: list[dict]):
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"{ZALO_API_URL}/message/cs",
+            headers={
+                "Content-Type": "application/json",
+                "access_token": ZALO_OA_ACCESS_TOKEN,
+            },
+            json={
+                "recipient": {"user_id": user_id},
+                "message": {
+                    "text": text,
+                    "attachment": {
+                        "type": "template",
+                        "payload": {
+                            "buttons": buttons
+                        }
+                    }
+                },
+            },
+        )
+
+    result = response.json()
+    if result.get("error") != 0:
+        logger.error("Zalo send buttons failed: %s", result)
+    return result
+
+
+async def send_long_text_message(user_id: str, text: str, buttons: list[dict] | None = None):
+    chunks = split_message_for_zalo(text)
+    for i, chunk in enumerate(chunks):
+        if i == len(chunks) - 1 and buttons:
+            await send_text_with_buttons(user_id, chunk, buttons)
+        else:
+            await send_text_message(user_id, chunk)
+
+
+async def send_summary_with_interactive_buttons(user_id: str, title: str, structured_summary: dict[str, Any], elapsed_seconds: float | None = None):
+    text = format_summary_menu(title, structured_summary, elapsed_seconds)
+    buttons = []
+    # Zalo supports max 5 buttons usually
+    for p in structured_summary.get("points", [])[:5]:
+        buttons.append({
+            "title": f"📖 Chi tiết Ý {p['index']}",
+            "type": "oa.query.show",
+            "payload": str(p['index'])
+        })
+    await send_long_text_message(user_id, text, buttons)
 
 
 async def download_zalo_file(file_url: str, save_path: str) -> bool:
@@ -258,12 +300,7 @@ async def webhook_verify():
     return JSONResponse(content={"status": "ok", "message": "Zalo webhook is active"}, status_code=200)
 
 
-@app.get("/upload", response_class=HTMLResponse)
-async def upload_page():
-    """Web Upload Portal — Kéo thả file, nhận tóm tắt AI ngay trên trình duyệt."""
-    html_path = os.path.join(os.path.dirname(__file__), "static", "upload.html")
-    with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read(), status_code=200)
+
 
 
 @app.post("/api/summarize")
@@ -421,13 +458,30 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
     if latest and normalized.isdigit():
         point_index = int(normalized)
         if 1 <= point_index <= 5:
-            await send_long_text_message(user_id, format_point_detail(latest["data"], point_index))
+            detail_text = format_point_detail(latest["data"], point_index)
+            # Attach the audio button at the bottom of the detail text
+            detail_buttons = [
+                {
+                    "title": f"🔊 Nghe đọc Ý {point_index}",
+                    "type": "oa.query.show",
+                    "payload": f"NGHE {point_index}"
+                }
+            ]
+            await send_long_text_message(user_id, detail_text, detail_buttons)
             return True
 
     if latest and normalized.startswith("chi tiet"):
         point_index = get_point_from_command(normalized)
         if point_index is not None:
-            await send_long_text_message(user_id, format_point_detail(latest["data"], point_index))
+            detail_text = format_point_detail(latest["data"], point_index)
+            detail_buttons = [
+                {
+                    "title": f"🔊 Nghe đọc Ý {point_index}",
+                    "type": "oa.query.show",
+                    "payload": f"NGHE {point_index}"
+                }
+            ]
+            await send_long_text_message(user_id, detail_text, detail_buttons)
             return True
 
     return False
@@ -519,7 +573,7 @@ async def handle_zalo_text(user_id: str, text: str):
         return
 
     remember_summary(user_id, "van ban ban vua gui", structured)
-    await send_long_text_message(user_id, format_summary_menu("van ban ban vua gui", structured))
+    await send_summary_with_interactive_buttons(user_id, "van ban ban vua gui", structured)
     increment_usage(user_id)
 
 
@@ -561,7 +615,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             return
 
         remember_summary(user_id, file_name, structured)
-        await send_long_text_message(user_id, format_summary_menu(file_name, structured, time.time() - start_time))
+        await send_summary_with_interactive_buttons(user_id, file_name, structured, time.time() - start_time)
         increment_usage(user_id)
     except Exception as exc:
         logger.error("File processing error: %s", exc, exc_info=True)
@@ -595,7 +649,7 @@ async def handle_zalo_image(user_id: str, image_url: str):
             return
 
         remember_summary(user_id, "anh ban vua gui", structured)
-        await send_long_text_message(user_id, format_summary_menu("anh ban vua gui", structured, time.time() - start_time))
+        await send_summary_with_interactive_buttons(user_id, "anh ban vua gui", structured, time.time() - start_time)
         increment_usage(user_id)
     except Exception as exc:
         logger.error("Image processing error: %s", exc, exc_info=True)
