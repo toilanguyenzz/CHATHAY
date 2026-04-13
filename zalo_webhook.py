@@ -35,6 +35,7 @@ ZALO_VERIFICATION_CODE = os.getenv(
     "ZALO_VERIFICATION_CODE",
     "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t",
 )
+ZALO_TEXT_LIMIT = 2900
 
 user_daily_usage: dict[str, dict] = {}
 latest_summary_by_user: dict[str, dict[str, str]] = {}
@@ -108,6 +109,42 @@ async def send_text_message(user_id: str, text: str):
     if result.get("error") != 0:
         logger.error("Zalo send failed: %s", result)
     return result
+
+
+def split_message_for_zalo(text: str, limit: int = ZALO_TEXT_LIMIT) -> list[str]:
+    """Split a long message into Zalo-safe chunks."""
+    normalized = text.replace("\r\n", "\n").strip()
+    if len(normalized) <= limit:
+        return [normalized]
+
+    chunks: list[str] = []
+    remaining = normalized
+
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+
+        split_at = remaining.rfind("\n\n", 0, limit)
+        if split_at <= 0:
+            split_at = remaining.rfind("\n", 0, limit)
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, limit)
+        if split_at <= 0:
+            split_at = limit
+
+        chunk = remaining[:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at:].strip()
+
+    return chunks
+
+
+async def send_long_text_message(user_id: str, text: str):
+    """Send one or more text messages while respecting Zalo's body size limit."""
+    for chunk in split_message_for_zalo(text):
+        await send_text_message(user_id, chunk)
 
 
 async def download_zalo_file(file_url: str, save_path: str) -> bool:
@@ -317,7 +354,7 @@ async def handle_zalo_text(user_id: str, text: str):
     summary = await summarize_text(text)
     brief = build_brief_summary(summary)
     remember_summary(user_id, "van ban ban vua gui", summary)
-    await send_text_message(
+    await send_long_text_message(
         user_id,
         f"Tom tat nhanh: {brief}\n\nTom tat chi tiet:\n{summary}\n\nNeu can nghe ban doc, hay nhan: NGHE",
     )
@@ -367,7 +404,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
         elapsed = time.time() - start_time
         brief = build_brief_summary(summary)
         remember_summary(user_id, file_name, summary)
-        await send_text_message(
+        await send_long_text_message(
             user_id,
             f"Tom tat tai lieu: {file_name}\n"
             f"Xu ly trong {elapsed:.0f} giay\n"
@@ -409,7 +446,7 @@ async def handle_zalo_image(user_id: str, image_url: str):
         elapsed = time.time() - start_time
         brief = build_brief_summary(summary)
         remember_summary(user_id, "anh ban vua gui", summary)
-        await send_text_message(
+        await send_long_text_message(
             user_id,
             f"Tom tat tu anh chup:\n"
             f"Xu ly trong {elapsed:.0f} giay\n"
