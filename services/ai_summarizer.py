@@ -105,8 +105,8 @@ QUOTA_MESSAGE = "He thong AI dang het quota tam thoi. Ban vui long thu lai sau k
 GENERIC_SUMMARY_ERROR = "Xin loi, toi khong the tom tat tai lieu nay luc nay. Ban vui long thu lai sau."
 GENERIC_IMAGE_ERROR = "Xin loi, toi khong the doc noi dung trong anh luc nay. Ban vui long chup ro hon hoac thu lai sau."
 
-# Rate limiting
-gemini_lock = asyncio.Lock()
+# Rate limiting (Removed: User is now on Tier 1 Postpay with 1000 RPM)
+# gemini_lock = asyncio.Lock()
 
 # ===== LAYER 3: MODEL CASCADE =====
 
@@ -297,26 +297,19 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
     if cached:
         return cached
 
-    async with gemini_lock:
-        # Double-check cache after acquiring lock (another request may have filled it)
-        cached = _text_cache.get(text)
-        if cached:
-            return cached
+    try:
+        prompt = _build_text_prompt(text)
+        response_text = await _call_gemini_with_fallback(prompt, len(text))
+        parsed = _extract_json(response_text)
+        normalized = _normalize_points(parsed)
+        logger.info("Summary generated: %s chars, cache stats: %s",
+                    len(response_text), _text_cache.stats)
 
-        try:
-            await asyncio.sleep(1.0)  # Giảm từ 4.1s vì cache đã bảo vệ chống spam
-            prompt = _build_text_prompt(text)
-            response_text = await _call_gemini_with_fallback(prompt, len(text))
-            parsed = _extract_json(response_text)
-            normalized = _normalize_points(parsed)
-            logger.info("Summary generated: %s chars, cache stats: %s",
-                        len(response_text), _text_cache.stats)
+        # Layer 1: Store in cache
+        _text_cache.put(text, normalized)
+        return normalized
 
-            # Layer 1: Store in cache
-            _text_cache.put(text, normalized)
-            return normalized
-
-        except Exception as exc:
+    except Exception as exc:
             logger.error("Summarization failed: %s", exc)
             if _is_quota_error(exc):
                 return {"error": QUOTA_MESSAGE}
@@ -330,26 +323,20 @@ async def summarize_image_structured(image_path: str) -> dict[str, Any]:
     if cached:
         return cached
 
-    async with gemini_lock:
-        cached = _image_cache.get(image_path)
-        if cached:
-            return cached
+    try:
+        image = Image.open(image_path)
+        response_text = await _call_gemini_with_fallback(
+            [_build_image_prompt(), image], text_length=500
+        )
+        parsed = _extract_json(response_text)
+        normalized = _normalize_points(parsed)
+        logger.info("Image summary generated: %s chars, cache stats: %s",
+                    len(response_text), _image_cache.stats)
 
-        try:
-            await asyncio.sleep(1.0)
-            image = Image.open(image_path)
-            response_text = await _call_gemini_with_fallback(
-                [_build_image_prompt(), image], text_length=500
-            )
-            parsed = _extract_json(response_text)
-            normalized = _normalize_points(parsed)
-            logger.info("Image summary generated: %s chars, cache stats: %s",
-                        len(response_text), _image_cache.stats)
+        _image_cache.put(image_path, normalized)
+        return normalized
 
-            _image_cache.put(image_path, normalized)
-            return normalized
-
-        except Exception as exc:
+    except Exception as exc:
             logger.error("Image summarization failed: %s", exc)
             if _is_quota_error(exc):
                 return {"error": QUOTA_MESSAGE}
