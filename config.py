@@ -10,8 +10,10 @@ class Config:
     # Telegram
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-    # Gemini AI
+    # Gemini AI (support multi-key rotation for quota multiplication)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_API_KEY_2: str = os.getenv("GEMINI_API_KEY_2", "")
+    GEMINI_API_KEY_3: str = os.getenv("GEMINI_API_KEY_3", "")
 
     # FPT.AI TTS
     FPT_AI_API_KEY: str = os.getenv("FPT_AI_API_KEY", "")
