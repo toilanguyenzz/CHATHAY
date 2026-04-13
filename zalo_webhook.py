@@ -308,6 +308,72 @@ async def api_summarize(file: UploadFile = File(...)):
         return JSONResponse(content={"error": "Đã xảy ra lỗi. Vui lòng thử lại!"}, status_code=500)
 
 
+@app.post("/api/summarize-view", response_class=HTMLResponse)
+async def api_summarize_view(file: UploadFile = File(...)):
+    """Upload file → trả về trang HTML kết quả đẹp (cho Send To trên Windows)."""
+    try:
+        file_name = file.filename or "document"
+        file_type = get_file_type(file_name)
+
+        if file_type == "unknown":
+            return HTMLResponse(content="<h1>Chỉ hỗ trợ PDF, Word, hoặc ảnh.</h1>", status_code=400)
+
+        file_path = os.path.join(config.TEMP_DIR, f"{uuid.uuid4().hex}_{file_name}")
+        content = await file.read()
+
+        if len(content) > config.MAX_FILE_SIZE_MB * 1024 * 1024:
+            return HTMLResponse(content=f"<h1>File quá lớn! Tối đa {config.MAX_FILE_SIZE_MB}MB.</h1>", status_code=400)
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            if file_type == "image":
+                structured = await summarize_image_structured(file_path)
+            else:
+                text, _ft = await extract_text(file_path, config.MAX_PAGES)
+                if not text:
+                    return HTMLResponse(content="<h1>Không đọc được nội dung file này.</h1>", status_code=400)
+                structured = await summarize_text_structured(text)
+
+            if structured.get("error"):
+                return HTMLResponse(content=f"<h1>{structured['error']}</h1>", status_code=500)
+
+            # Build beautiful HTML result page
+            title = structured.get("document_title", "Tài liệu")
+            overview = structured.get("overview", "")
+            points_html = ""
+            for p in structured.get("points", []):
+                points_html += f"""<div class="c" onclick="this.classList.toggle('o')">
+                    <div class="h"><div class="n">{p['index']}</div><div class="tt">{p['title']}</div><div class="tg">▼</div></div>
+                    <div class="b">{p['brief']}</div>
+                    <div class="d">{p['detail']}</div></div>"""
+
+            html = f"""<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>Read AI — {title}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Inter',sans-serif;background:#0a0e1a;color:#f0f0f5;padding:40px 20px}}
+body::before{{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 20% 50%,rgba(108,92,231,.12) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(0,206,201,.08) 0%,transparent 50%);pointer-events:none}}
+.w{{max-width:700px;margin:0 auto;position:relative;z-index:1}}.logo{{text-align:center;font-size:32px;font-weight:800;background:linear-gradient(135deg,#6c5ce7,#00cec9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px}}
+.sub{{text-align:center;color:#8892b0;font-size:13px;margin-bottom:28px}}.hdr{{background:linear-gradient(135deg,#131829,#1a2035);border:1px solid #2d3555;border-radius:16px;padding:24px;margin-bottom:16px}}
+.dt{{font-size:20px;font-weight:700;margin-bottom:8px}}.ov{{color:#8892b0;font-size:14px;line-height:1.6;padding-left:12px;border-left:3px solid #6c5ce7}}
+.c{{background:#131829;border:1px solid #2d3555;border-radius:14px;margin-bottom:10px;cursor:pointer;overflow:hidden;transition:all .3s}}.c:hover{{border-color:#6c5ce7;transform:translateX(4px)}}
+.h{{display:flex;align-items:center;gap:12px;padding:16px 20px}}.n{{width:32px;height:32px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}}
+.tt{{font-weight:600;font-size:15px;flex:1}}.tg{{color:#8892b0;transition:transform .3s;font-size:16px}}.c.o .tg{{transform:rotate(180deg)}}
+.b{{padding:0 20px 12px;font-size:13px;color:#8892b0}}.d{{display:none;padding:16px 20px;font-size:14px;line-height:1.7;border-top:1px solid #2d3555}}
+.c.o .d{{display:block}}.fb{{text-align:center;color:#8892b0;font-size:12px;margin-top:20px}}</style></head>
+<body><div class="w"><div class="logo">📖 Read AI</div><div class="sub">Kết quả tóm tắt tài liệu</div>
+<div class="hdr"><div class="dt">📖 {title}</div><div class="ov">{overview}</div></div>
+{points_html}<div class="fb">📄 File: {file_name}</div></div></body></html>"""
+            return HTMLResponse(content=html, status_code=200)
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+    except Exception as exc:
+        logger.error("API summarize-view error: %s", exc, exc_info=True)
+        return HTMLResponse(content="<h1>Đã xảy ra lỗi. Vui lòng thử lại!</h1>", status_code=500)
+
+
 async def send_audio_for_point(user_id: str, point_index: int):
     latest = get_latest_summary(user_id)
     if not latest:
