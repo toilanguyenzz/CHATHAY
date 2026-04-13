@@ -2,6 +2,7 @@
 
 import json
 import logging
+import asyncio
 from typing import Any
 
 import google.generativeai as genai
@@ -10,6 +11,9 @@ from PIL import Image
 from config import config
 
 logger = logging.getLogger(__name__)
+
+# Global lock to completely enforce Gemini 15 RPM free tier limit
+gemini_lock = asyncio.Lock()
 
 genai.configure(api_key=config.GEMINI_API_KEY)
 
@@ -140,33 +144,37 @@ Yeu cau:
 
 async def summarize_text_structured(text: str) -> dict[str, Any]:
     """Summarize extracted text into 5 interactive points."""
-    try:
-        response = _get_model().generate_content(_build_text_prompt(text))
-        parsed = _extract_json(response.text)
-        normalized = _normalize_points(parsed)
-        logger.info("Structured summary generated: %s chars", len(response.text))
-        return normalized
-    except Exception as exc:
-        logger.error("Structured text summarization failed: %s", exc)
-        if _is_quota_error(exc):
-            return {"error": QUOTA_MESSAGE}
-        return {"error": GENERIC_SUMMARY_ERROR}
+    async with gemini_lock:
+        try:
+            await asyncio.sleep(4.1)  # Đảm bảo tối đa 14 requests/phút trên toàn hệ thống
+            response = _get_model().generate_content(_build_text_prompt(text))
+            parsed = _extract_json(response.text)
+            normalized = _normalize_points(parsed)
+            logger.info("Structured summary generated: %s chars", len(response.text))
+            return normalized
+        except Exception as exc:
+            logger.error("Structured text summarization failed: %s", exc)
+            if _is_quota_error(exc):
+                return {"error": QUOTA_MESSAGE}
+            return {"error": GENERIC_SUMMARY_ERROR}
 
 
 async def summarize_image_structured(image_path: str) -> dict[str, Any]:
     """Summarize image content into 5 interactive points."""
-    try:
-        image = Image.open(image_path)
-        response = _get_model().generate_content([_build_image_prompt(), image])
-        parsed = _extract_json(response.text)
-        normalized = _normalize_points(parsed)
-        logger.info("Structured image summary generated: %s chars", len(response.text))
-        return normalized
-    except Exception as exc:
-        logger.error("Structured image summarization failed: %s", exc)
-        if _is_quota_error(exc):
-            return {"error": QUOTA_MESSAGE}
-        return {"error": GENERIC_IMAGE_ERROR}
+    async with gemini_lock:
+        try:
+            await asyncio.sleep(4.1)  # Đảm bảo tối đa 14 requests/phút trên toàn hệ thống
+            image = Image.open(image_path)
+            response = _get_model().generate_content([_build_image_prompt(), image])
+            parsed = _extract_json(response.text)
+            normalized = _normalize_points(parsed)
+            logger.info("Structured image summary generated: %s chars", len(response.text))
+            return normalized
+        except Exception as exc:
+            logger.error("Structured image summarization failed: %s", exc)
+            if _is_quota_error(exc):
+                return {"error": QUOTA_MESSAGE}
+            return {"error": GENERIC_IMAGE_ERROR}
 
 
 async def summarize_text(text: str, doc_type: str | None = None) -> str:
