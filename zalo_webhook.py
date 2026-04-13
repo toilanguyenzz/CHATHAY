@@ -1,4 +1,4 @@
-"""Zalo OA webhook server focused on text/file/image summarization."""
+"""Zalo OA webhook server with interactive summary flow."""
 
 import asyncio
 import hashlib
@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 import uvicorn
@@ -17,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import config
-from services.ai_summarizer import summarize_image, summarize_text
+from services.ai_summarizer import summarize_image_structured, summarize_text_structured
 from services.document_parser import extract_text, get_file_type
 from services.tts_service import cleanup_audio, text_to_speech
 
@@ -37,8 +38,8 @@ ZALO_VERIFICATION_CODE = os.getenv(
 )
 ZALO_TEXT_LIMIT = 2900
 
-user_daily_usage: dict[str, dict] = {}
-latest_summary_by_user: dict[str, dict[str, str]] = {}
+user_daily_usage: dict[str, dict[str, int | str]] = {}
+latest_summary_by_user: dict[str, dict[str, Any]] = {}
 
 
 def check_rate_limit(user_id: str) -> bool:
@@ -47,79 +48,53 @@ def check_rate_limit(user_id: str) -> bool:
         user_daily_usage[user_id] = {"date": today, "count": 0}
     if user_daily_usage[user_id]["date"] != today:
         user_daily_usage[user_id] = {"date": today, "count": 0}
-    return user_daily_usage[user_id]["count"] < config.FREE_DAILY_LIMIT
+    return int(user_daily_usage[user_id]["count"]) < config.FREE_DAILY_LIMIT
 
 
 def increment_usage(user_id: str):
     today = time.strftime("%Y-%m-%d")
     if user_id not in user_daily_usage or user_daily_usage[user_id]["date"] != today:
         user_daily_usage[user_id] = {"date": today, "count": 0}
-    user_daily_usage[user_id]["count"] += 1
+    user_daily_usage[user_id]["count"] = int(user_daily_usage[user_id]["count"]) + 1
 
 
-def build_brief_summary(summary: str, max_len: int = 220) -> str:
-    """Create a short, readable preview line from a full summary."""
-    cleaned = " ".join(summary.replace("\n", " ").split())
-    cleaned = cleaned.lstrip("-•*0123456789. )(").strip()
+def clean_preview_text(text: str, max_len: int = 180) -> str:
+    cleaned = " ".join(text.replace("\n", " ").split()).strip()
+    cleaned = cleaned.lstrip("-*0123456789. )(").strip()
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[: max_len - 3].rstrip() + "..."
 
 
-def remember_summary(user_id: str, title: str, summary: str):
-    latest_summary_by_user[user_id] = {
-        "title": title,
-        "summary": summary,
-    }
+def remember_summary(user_id: str, title: str, structured_summary: dict[str, Any]):
+    latest_summary_by_user[user_id] = {"title": title, "data": structured_summary}
 
 
-def get_latest_summary(user_id: str) -> dict[str, str] | None:
+def get_latest_summary(user_id: str) -> dict[str, Any] | None:
     return latest_summary_by_user.get(user_id)
 
 
-def verify_zalo_signature(request_body: bytes, mac_header: str) -> bool:
-    """Verify the webhook MAC if a secret is configured."""
-    if not ZALO_OA_SECRET or not mac_header:
-        return True
-
-    expected = hmac.new(
-        ZALO_OA_SECRET.encode("utf-8"),
-        request_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, mac_header)
-
-
-async def send_text_message(user_id: str, text: str):
-    """Send a plain text message to a Zalo OA user."""
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.post(
-            f"{ZALO_API_URL}/message/cs",
-            headers={
-                "Content-Type": "application/json",
-                "access_token": ZALO_OA_ACCESS_TOKEN,
-            },
-            json={
-                "recipient": {"user_id": user_id},
-                "message": {"text": text},
-            },
-        )
-
-    result = response.json()
-    if result.get("error") != 0:
-        logger.error("Zalo send failed: %s", result)
-    return result
+def get_point_from_command(text: str) -> int | None:
+    normalized = text.strip().lower()
+    for token in normalized.replace("nghe", " ").replace("chi tiet", " ").split():
+        if token.isdigit():
+            value = int(token)
+            if 1 <= value <= 5:
+                return value
+    if normalized.isdigit():
+        value = int(normalized)
+        if 1 <= value <= 5:
+            return value
+    return None
 
 
 def split_message_for_zalo(text: str, limit: int = ZALO_TEXT_LIMIT) -> list[str]:
-    """Split a long message into Zalo-safe chunks."""
     normalized = text.replace("\r\n", "\n").strip()
     if len(normalized) <= limit:
         return [normalized]
 
     chunks: list[str] = []
     remaining = normalized
-
     while remaining:
         if len(remaining) <= limit:
             chunks.append(remaining)
@@ -141,14 +116,74 @@ def split_message_for_zalo(text: str, limit: int = ZALO_TEXT_LIMIT) -> list[str]
     return chunks
 
 
+def format_summary_menu(title: str, structured_summary: dict[str, Any], elapsed_seconds: float | None = None) -> str:
+    lines: list[str] = []
+    if title:
+        lines.append(f"Tom tat tai lieu: {title}")
+    if elapsed_seconds is not None:
+        lines.append(f"Xu ly trong {elapsed_seconds:.0f} giay")
+
+    overview = structured_summary.get("overview", "")
+    if overview:
+        lines.append(f"Tong quan: {overview}")
+
+    lines.append("5 y chinh:")
+    for point in structured_summary.get("points", [])[:5]:
+        lines.append(f"{point['index']}. {point['title']}: {clean_preview_text(point['brief'])}")
+
+    lines.append("")
+    lines.append("Nhan 1-5 de xem ky hon tung y.")
+    lines.append("Neu muon nghe audio, nhan: NGHE 1, NGHE 2, ..., NGHE 5")
+    return "\n".join(lines)
+
+
+def format_point_detail(structured_summary: dict[str, Any], point_index: int) -> str:
+    point = structured_summary["points"][point_index - 1]
+    return (
+        f"Y {point_index}: {point['title']}\n"
+        f"Tom tat nhanh: {point['brief']}\n\n"
+        f"Chi tiet:\n{point['detail']}\n\n"
+        f"Neu muon nghe y nay, nhan: NGHE {point_index}"
+    )
+
+
+def verify_zalo_signature(request_body: bytes, mac_header: str) -> bool:
+    if not ZALO_OA_SECRET or not mac_header:
+        return True
+    expected = hmac.new(
+        ZALO_OA_SECRET.encode("utf-8"),
+        request_body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, mac_header)
+
+
+async def send_text_message(user_id: str, text: str):
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"{ZALO_API_URL}/message/cs",
+            headers={
+                "Content-Type": "application/json",
+                "access_token": ZALO_OA_ACCESS_TOKEN,
+            },
+            json={
+                "recipient": {"user_id": user_id},
+                "message": {"text": text},
+            },
+        )
+
+    result = response.json()
+    if result.get("error") != 0:
+        logger.error("Zalo send failed: %s", result)
+    return result
+
+
 async def send_long_text_message(user_id: str, text: str):
-    """Send one or more text messages while respecting Zalo's body size limit."""
     for chunk in split_message_for_zalo(text):
         await send_text_message(user_id, chunk)
 
 
 async def download_zalo_file(file_url: str, save_path: str) -> bool:
-    """Download a file from the direct URL provided by Zalo's webhook."""
     if not file_url:
         logger.error("No file URL provided")
         return False
@@ -160,10 +195,8 @@ async def download_zalo_file(file_url: str, save_path: str) -> bool:
             if response.status_code != 200:
                 logger.error("Download failed with status: %s", response.status_code)
                 return False
-
             with open(save_path, "wb") as output_file:
                 output_file.write(response.content)
-
             logger.info("File downloaded: %s bytes", len(response.content))
             return True
         except Exception as exc:
@@ -178,7 +211,6 @@ async def lifespan(app: FastAPI):
     logger.info("OA Token set: %s", "YES" if ZALO_OA_ACCESS_TOKEN else "NO")
     logger.info("OA Secret set: %s", "YES" if ZALO_OA_SECRET else "NO")
     logger.info("App ID: %s", ZALO_APP_ID)
-    logger.info("Verification code: %s...", ZALO_VERIFICATION_CODE[:10])
     logger.info("=" * 60)
     yield
     logger.info("Server shutting down...")
@@ -227,71 +259,30 @@ async def webhook_verify():
     return JSONResponse(content={"status": "ok", "message": "Zalo webhook is active"}, status_code=200)
 
 
-async def process_webhook_event(body: dict):
-    """Process a Zalo webhook event in the background."""
-    try:
-        event_name = body.get("event_name", "")
-        sender_id = body.get("sender", {}).get("id", "")
-        logger.info("Processing event: %s from %s", event_name, sender_id)
-
-        if event_name == "follow":
-            await send_text_message(
-                sender_id,
-                "Xin chao! Toi la tro ly AI tom tat tai lieu.\n\n"
-                "Gui cho toi file PDF, Word, anh chup tai lieu, hoac mot doan text dai de bat dau.",
-            )
-            return
-
-        if event_name == "user_send_text":
-            text = body.get("message", {}).get("text", "")
-            await handle_zalo_text(sender_id, text)
-            return
-
-        if event_name == "user_send_image":
-            attachments = body.get("message", {}).get("attachments", [])
-            if attachments:
-                image_url = attachments[0].get("payload", {}).get("url", "")
-                await handle_zalo_image(sender_id, image_url)
-            return
-
-        if event_name == "user_send_file":
-            attachments = body.get("message", {}).get("attachments", [])
-            if attachments:
-                payload = attachments[0].get("payload", {})
-                file_url = payload.get("url", "")
-                file_name = payload.get("name", "document")
-                file_size = payload.get("size", 0)
-                await handle_zalo_file(sender_id, file_url, file_name, file_size)
-            return
-
-        logger.info("Unhandled event: %s", event_name)
-    except Exception as exc:
-        logger.error("Error processing event: %s", exc, exc_info=True)
-
-
-async def send_audio_for_latest_summary(user_id: str):
-    """Generate audio on demand for the user's latest summary."""
+async def send_audio_for_point(user_id: str, point_index: int):
     latest = get_latest_summary(user_id)
     if not latest:
-        await send_text_message(user_id, "Chua co ban tom tat nao gan day de doc. Gui tai lieu truoc nhe!")
+        await send_text_message(user_id, "Chua co ban tom tat nao gan day. Gui tai lieu truoc nhe!")
         return
-
     if not config.FPT_AI_API_KEY:
         await send_text_message(user_id, "Tinh nang doc audio chua duoc bat tren he thong nay.")
         return
 
-    await send_text_message(user_id, "Dang tao ban doc audio... Vui long doi them chut.")
-    audio_path = await text_to_speech(latest["summary"])
+    points = latest["data"]["points"]
+    if not 1 <= point_index <= len(points):
+        await send_text_message(user_id, "Chi so khong hop le. Hay chon tu 1 den 5.")
+        return
+
+    point = points[point_index - 1]
+    await send_text_message(user_id, f"Dang tao audio cho y {point_index}: {point['title']}")
+    audio_path = await text_to_speech(point["detail"])
     if not audio_path:
         await send_text_message(user_id, "Khong tao duoc audio luc nay. Ban thu lai sau nhe!")
         return
 
     audio_filename = os.path.basename(audio_path)
     audio_url = f"https://chathay-production.up.railway.app/audio/{audio_filename}"
-    await send_text_message(
-        user_id,
-        f"Ban doc audio cho: {latest['title']}\nNghe tai day: {audio_url}",
-    )
+    await send_text_message(user_id, f"Nghe y {point_index} tai day:\n{audio_url}")
     asyncio.create_task(_cleanup_audio_later(audio_path))
 
 
@@ -300,9 +291,75 @@ async def _cleanup_audio_later(audio_path: str, delay_seconds: int = 3600):
     await cleanup_audio(audio_path)
 
 
+async def handle_interactive_command(user_id: str, text: str) -> bool:
+    normalized = text.strip().lower()
+    latest = get_latest_summary(user_id)
+
+    if normalized.startswith("nghe"):
+        point_index = get_point_from_command(normalized)
+        if point_index is None:
+            await send_text_message(user_id, "Hay nhan theo mau: NGHE 1, NGHE 2, ..., NGHE 5")
+            return True
+        await send_audio_for_point(user_id, point_index)
+        return True
+
+    if latest and normalized.isdigit():
+        point_index = int(normalized)
+        if 1 <= point_index <= 5:
+            await send_long_text_message(user_id, format_point_detail(latest["data"], point_index))
+            return True
+
+    if latest and normalized.startswith("chi tiet"):
+        point_index = get_point_from_command(normalized)
+        if point_index is not None:
+            await send_long_text_message(user_id, format_point_detail(latest["data"], point_index))
+            return True
+
+    return False
+
+
+async def process_webhook_event(body: dict):
+    try:
+        event_name = body.get("event_name", "")
+        sender_id = body.get("sender", {}).get("id", "")
+        logger.info("Processing event: %s from %s", event_name, sender_id)
+
+        if event_name == "follow":
+            await send_text_message(
+                sender_id,
+                "Xin chao! Toi la tro ly AI tom tat tai lieu.\nGui cho toi file PDF, Word, anh chup tai lieu hoac mot doan text dai de bat dau.",
+            )
+            return
+
+        if event_name == "user_send_text":
+            await handle_zalo_text(sender_id, body.get("message", {}).get("text", ""))
+            return
+
+        if event_name == "user_send_image":
+            attachments = body.get("message", {}).get("attachments", [])
+            if attachments:
+                await handle_zalo_image(sender_id, attachments[0].get("payload", {}).get("url", ""))
+            return
+
+        if event_name == "user_send_file":
+            attachments = body.get("message", {}).get("attachments", [])
+            if attachments:
+                payload = attachments[0].get("payload", {})
+                await handle_zalo_file(
+                    sender_id,
+                    payload.get("url", ""),
+                    payload.get("name", "document"),
+                    payload.get("size", 0),
+                )
+            return
+
+        logger.info("Unhandled event: %s", event_name)
+    except Exception as exc:
+        logger.error("Error processing event: %s", exc, exc_info=True)
+
+
 @app.post("/webhook/zalo")
 async def zalo_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive and acknowledge Zalo webhook calls."""
     try:
         raw_body = await request.body()
         mac_header = request.headers.get("mac", "")
@@ -310,13 +367,9 @@ async def zalo_webhook(request: Request, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=403, detail="Invalid signature")
 
         body = json.loads(raw_body)
-        event_name = body.get("event_name", "")
-        sender_id = body.get("sender", {}).get("id", "unknown")
-        logger.info("Webhook received: %s from %s", event_name, sender_id)
-
+        logger.info("Webhook received: %s from %s", body.get("event_name", ""), body.get("sender", {}).get("id", "unknown"))
         background_tasks.add_task(process_webhook_event, body)
         return JSONResponse(content={"status": "ok"}, status_code=200)
-
     except HTTPException:
         raise
     except Exception as exc:
@@ -325,44 +378,37 @@ async def zalo_webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 async def handle_zalo_text(user_id: str, text: str):
-    """Summarize long user text directly."""
-    normalized_text = text.strip().lower()
-    if normalized_text in {"nghe", "audio", "doc", "voice"}:
-        await send_audio_for_latest_summary(user_id)
+    normalized = text.strip().lower()
+    if await handle_interactive_command(user_id, normalized):
         return
 
-    if len(text) < 10:
+    if len(text.strip()) < 10:
         await send_text_message(
             user_id,
-            "Gui cho toi file PDF, Word, hoac anh chup tai lieu.\n"
-            "Toi se tom tat thanh 5 y chinh cho ban.",
+            "Gui cho toi file PDF, Word, hoac anh chup tai lieu.\nToi se tach ra 5 y chinh de ban chon xem ky tung y.",
         )
         return
 
-    if len(text) <= 100:
-        await send_text_message(user_id, "Gui file hoac anh tai lieu cho toi de duoc tom tat!")
+    if len(text.strip()) <= 100:
+        await send_text_message(user_id, "Gui file hoac anh tai lieu, hoac mot doan text dai hon de toi tom tat.")
         return
 
     if not check_rate_limit(user_id):
-        await send_text_message(
-            user_id,
-            f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay. Quay lai ngay mai nhe!",
-        )
+        await send_text_message(user_id, f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay. Quay lai ngay mai nhe!")
         return
 
-    await send_text_message(user_id, "Dang tom tat van ban... Vui long doi.")
-    summary = await summarize_text(text)
-    brief = build_brief_summary(summary)
-    remember_summary(user_id, "van ban ban vua gui", summary)
-    await send_long_text_message(
-        user_id,
-        f"Tom tat nhanh: {brief}\n\nTom tat chi tiet:\n{summary}\n\nNeu can nghe ban doc, hay nhan: NGHE",
-    )
+    await send_text_message(user_id, "Dang tom tat van ban... Vui long doi khoang 15-30 giay.")
+    structured = await summarize_text_structured(text)
+    if structured.get("error"):
+        await send_text_message(user_id, str(structured["error"]))
+        return
+
+    remember_summary(user_id, "van ban ban vua gui", structured)
+    await send_long_text_message(user_id, format_summary_menu("van ban ban vua gui", structured))
     increment_usage(user_id)
 
 
 async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_size):
-    """Download, parse, and summarize a user file."""
     try:
         file_size = int(file_size)
     except (ValueError, TypeError):
@@ -377,10 +423,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
         return
 
     if get_file_type(file_name) == "unknown":
-        await send_text_message(
-            user_id,
-            "Toi chi ho tro file PDF, Word (.docx), hoac anh. Vui long gui dung dinh dang!",
-        )
+        await send_text_message(user_id, "Toi chi ho tro file PDF, Word (.docx), hoac anh. Vui long gui dung dinh dang!")
         return
 
     await send_text_message(user_id, "Dang xu ly tai lieu cua ban... Vui long doi khoang 15-30 giay.")
@@ -392,28 +435,19 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             await send_text_message(user_id, "Khong the tai file. Vui long gui lai!")
             return
 
-        text, _ftype = await extract_text(file_path, config.MAX_PAGES)
+        text, _file_type = await extract_text(file_path, config.MAX_PAGES)
         if not text:
-            await send_text_message(
-                user_id,
-                "Khong the doc duoc noi dung file nay. Thu chup anh tai lieu va gui anh cho toi!",
-            )
+            await send_text_message(user_id, "Khong the doc duoc noi dung file nay. Thu chup anh tai lieu va gui anh cho toi!")
             return
 
-        summary = await summarize_text(text)
-        elapsed = time.time() - start_time
-        brief = build_brief_summary(summary)
-        remember_summary(user_id, file_name, summary)
-        await send_long_text_message(
-            user_id,
-            f"Tom tat tai lieu: {file_name}\n"
-            f"Xu ly trong {elapsed:.0f} giay\n"
-            f"Tom tat nhanh: {brief}\n\n"
-            f"Tom tat chi tiet:\n{summary}\n\n"
-            f"Neu can nghe ban doc, hay nhan: NGHE",
-        )
-        increment_usage(user_id)
+        structured = await summarize_text_structured(text)
+        if structured.get("error"):
+            await send_text_message(user_id, str(structured["error"]))
+            return
 
+        remember_summary(user_id, file_name, structured)
+        await send_long_text_message(user_id, format_summary_menu(file_name, structured, time.time() - start_time))
+        increment_usage(user_id)
     except Exception as exc:
         logger.error("File processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Da xay ra loi. Vui long thu lai!")
@@ -423,7 +457,6 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
 
 
 async def handle_zalo_image(user_id: str, image_url: str):
-    """Download and summarize an image."""
     if not check_rate_limit(user_id):
         await send_text_message(user_id, f"Ban da dung het {config.FREE_DAILY_LIMIT} luot mien phi hom nay.")
         return
@@ -438,24 +471,17 @@ async def handle_zalo_image(user_id: str, image_url: str):
             if response.status_code != 200:
                 await send_text_message(user_id, "Khong tai duoc anh. Gui lai nhe!")
                 return
-
             with open(image_path, "wb") as image_file:
                 image_file.write(response.content)
 
-        summary = await summarize_image(image_path)
-        elapsed = time.time() - start_time
-        brief = build_brief_summary(summary)
-        remember_summary(user_id, "anh ban vua gui", summary)
-        await send_long_text_message(
-            user_id,
-            f"Tom tat tu anh chup:\n"
-            f"Xu ly trong {elapsed:.0f} giay\n"
-            f"Tom tat nhanh: {brief}\n\n"
-            f"Tom tat chi tiet:\n{summary}\n\n"
-            f"Neu can nghe ban doc, hay nhan: NGHE",
-        )
-        increment_usage(user_id)
+        structured = await summarize_image_structured(image_path)
+        if structured.get("error"):
+            await send_text_message(user_id, str(structured["error"]))
+            return
 
+        remember_summary(user_id, "anh ban vua gui", structured)
+        await send_long_text_message(user_id, format_summary_menu("anh ban vua gui", structured, time.time() - start_time))
+        increment_usage(user_id)
     except Exception as exc:
         logger.error("Image processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Khong doc duoc anh. Chup ro hon va thu lai!")
@@ -465,21 +491,6 @@ async def handle_zalo_image(user_id: str, image_url: str):
 
 
 if __name__ == "__main__":
-    if not ZALO_OA_ACCESS_TOKEN:
-        print("=" * 50)
-        print("[WARN] ZALO_OA_ACCESS_TOKEN not set!")
-        print("Bot will start but cannot send messages.")
-        print("Add ZALO_OA_ACCESS_TOKEN to .env when ready.")
-        print("=" * 50)
-
-    print("=" * 50)
-    print("[BOT] Zalo Doc Bot - Webhook Server")
-    print("=" * 50)
-    print(f"[*] Port: {config.PORT}")
-    print("[*] Webhook URL: POST /webhook/zalo")
-    print("[*] Health check: GET /")
-    print("=" * 50)
-
     uvicorn.run(
         "zalo_webhook:app",
         host=config.HOST,
