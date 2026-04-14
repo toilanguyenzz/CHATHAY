@@ -30,9 +30,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
-ZALO_REFRESH_TOKEN = os.getenv("ZALO_REFRESH_TOKEN", "")
+ZALO_REFRESH_TOKEN = os.getenv("ZALO_REFRESH_TOKEN", "Kv8x5_6aiYbJdpqH-w-_8rAOFHZojDrOBl4J2Eh6d6O-ZXufszMML2VkU2dOXB8EB_vzDkRAgLyXXMidwR62OKlv22wSkFLrFUe1E_-Dt5i4tn8pe9xmMtZpFI61lzHnKSnO4BU-foDKnbzulAgo6aJ6P2NbyxXBDPrBTVxUfnGrar1CriYkBY6fSa_ItAy84FDnIEQ2lNKki4qUYV6XOcYVL1--wg1G7hfu1VhrhKSlcdPxrSosHGs4IYtUqxXGU8WlRwNkrr5rsHGit8_tSdtvEKhLcEjpAAur5itBpIehgaPXZC3D7MVsFKJ3dUi1CzGrPF6cuLa8yJvX_hgy8ZRsJqpidC80AkOfEf42kWhslh0e")
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
-ZALO_APP_SECRET = os.getenv("ZALO_APP_SECRET", ZALO_OA_SECRET)
+ZALO_APP_SECRET = os.getenv("ZALO_APP_SECRET", "A85Zn08BvmROzCMpS7QC")
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
 ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
 ZALO_OAUTH_URL = "https://oauth.zaloapp.com/v4/oa/access_token"
