@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
 ZALO_REFRESH_TOKEN = os.getenv("ZALO_REFRESH_TOKEN", "")
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
+ZALO_APP_SECRET = os.getenv("ZALO_APP_SECRET", ZALO_OA_SECRET)
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
 ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
 ZALO_OAUTH_URL = "https://oauth.zaloapp.com/v4/oa/access_token"
@@ -50,8 +51,8 @@ _token_lock = asyncio.Lock()
 async def _refresh_zalo_token() -> bool:
     global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN
     async with _token_lock:
-        if not ZALO_REFRESH_TOKEN or not ZALO_APP_ID or not ZALO_OA_SECRET:
-            logger.error("Missing refresh_token, app_id, or secret to refresh token")
+        if not ZALO_REFRESH_TOKEN or not ZALO_APP_ID or not ZALO_APP_SECRET:
+            logger.error("Missing refresh_token, app_id, or app_secret to refresh token")
             return False
 
         logger.info("Attempting to refresh Zalo token...")
@@ -59,7 +60,7 @@ async def _refresh_zalo_token() -> bool:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 res = await client.post(
                     ZALO_OAUTH_URL,
-                    headers={"secret_key": ZALO_OA_SECRET},
+                    headers={"secret_key": ZALO_APP_SECRET},
                     data={
                         "app_id": ZALO_APP_ID,
                         "grant_type": "refresh_token",
