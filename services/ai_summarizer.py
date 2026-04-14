@@ -15,6 +15,7 @@ from collections import OrderedDict
 from typing import Any
 
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 
 from config import config
@@ -283,7 +284,16 @@ async def _call_gemini_with_fallback(content, text_length: int = 0) -> str:
                     response_mime_type="application/json",
                 ),
             )
-            response = model.generate_content(content)
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            response = model.generate_content(
+                content,
+                safety_settings=safety_settings
+            )
             logger.info("Gemini OK: model=%s, response=%s chars", model_name, len(response.text))
             return response.text
         except Exception as exc:
