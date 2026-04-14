@@ -183,13 +183,24 @@ def _extract_json(text: str) -> dict[str, Any]:
     if text.startswith("```"):
         lines = text.splitlines()
         if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
+            # Skip the first line (e.g. ```json) and the last line (```)
+            # Find index of first ``` and last ```
+            start_idx = text.find("\n")
+            end_idx = text.rfind("```")
+            if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                text = text[start_idx:end_idx].strip()
 
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
         text = text[start : end + 1]
-    return json.loads(text)
+        
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.error("JSON Decode error: %s. Text: %s", e, text)
+        # Attempt to repair common JSON errors if possible, but mainly raise
+        raise ValueError(f"AI trả về định dạng không chuẩn (JSONDecodeError): {e}")
 
 
 def _normalize_points(data: dict[str, Any]) -> dict[str, Any]:
@@ -313,7 +324,10 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
             logger.error("Summarization failed: %s", exc)
             if _is_quota_error(exc):
                 return {"error": QUOTA_MESSAGE}
-            return {"error": GENERIC_SUMMARY_ERROR}
+            
+            error_msg = str(exc)
+            # Dùng thẳng lỗi để hiển thị tạm cho dev sửa
+            return {"error": f"Lỗi tạo tóm tắt: {error_msg}. Vui lòng thử lại!"}
 
 
 async def summarize_image_structured(image_path: str) -> dict[str, Any]:
