@@ -110,8 +110,8 @@ GENERIC_IMAGE_ERROR = "Xin loi, toi khong the doc noi dung trong anh luc nay. Ba
 
 # ===== LAYER 3: MODEL CASCADE =====
 
-MODEL_LIGHT = "gemini-2.0-flash-lite"   # Nhẹ nhất, quota riêng
-MODEL_STANDARD = "gemini-2.0-flash"      # Mạnh hơn, quota riêng
+MODEL_LIGHT = "gemini-2.5-flash-lite"   # Nhẹ nhất, quota riêng
+MODEL_STANDARD = "gemini-2.5-flash"      # Mạnh hơn, quota riêng
 LIGHT_THRESHOLD = 2000                   # Dưới 2000 ký tự → dùng model nhẹ
 
 
@@ -249,8 +249,8 @@ async def _call_gemini_with_fallback(content, text_length: int = 0) -> str:
     models_to_try = [
         MODEL_LIGHT if text_length < LIGHT_THRESHOLD else MODEL_STANDARD,
         MODEL_STANDARD,  # fallback 1
-        "gemini-2.5-flash-lite",  # fallback 2
-        "gemini-2.5-flash",  # fallback 3
+        "gemini-1.5-flash-8b",  # fallback 2
+        "gemini-1.5-flash",  # fallback 3
     ]
     # Deduplicate while preserving order
     seen = set()

@@ -30,9 +30,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
+ZALO_REFRESH_TOKEN = os.getenv("ZALO_REFRESH_TOKEN", "")
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
 ZALO_API_URL = "https://openapi.zalo.me/v3.0/oa"
+ZALO_OAUTH_URL = "https://oauth.zaloapp.com/v4/oa/access_token"
 ZALO_VERIFICATION_CODE = os.getenv(
     "ZALO_VERIFICATION_CODE",
     "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t",
@@ -41,6 +43,58 @@ ZALO_TEXT_LIMIT = 2900
 
 user_daily_usage: dict[str, dict[str, int | str]] = {}
 latest_summary_by_user: dict[str, dict[str, Any]] = {}
+
+# Thêm biến lock để tránh nhiều request refresh token cùng chạy một lúc
+_token_lock = asyncio.Lock()
+
+async def _refresh_zalo_token() -> bool:
+    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN
+    async with _token_lock:
+        if not ZALO_REFRESH_TOKEN or not ZALO_APP_ID or not ZALO_OA_SECRET:
+            logger.error("Missing refresh_token, app_id, or secret to refresh token")
+            return False
+
+        logger.info("Attempting to refresh Zalo token...")
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.post(
+                    ZALO_OAUTH_URL,
+                    headers={"secret_key": ZALO_OA_SECRET},
+                    data={
+                        "app_id": ZALO_APP_ID,
+                        "grant_type": "refresh_token",
+                        "refresh_token": ZALO_REFRESH_TOKEN,
+                    },
+                )
+            data = res.json()
+            if "access_token" in data:
+                ZALO_OA_ACCESS_TOKEN = data["access_token"]
+                ZALO_REFRESH_TOKEN = data.get("refresh_token", ZALO_REFRESH_TOKEN)
+                logger.info("Zalo token auto-refreshed successfully!")
+                
+                # Update into .env file locally
+                env_path = os.path.join(os.path.dirname(__file__), ".env")
+                if os.path.exists(env_path):
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        env_content = f.read()
+                    
+                    import re
+                    env_content = re.sub(r'ZALO_OA_ACCESS_TOKEN=.*', f'ZALO_OA_ACCESS_TOKEN={ZALO_OA_ACCESS_TOKEN}', env_content)
+                    if "ZALO_REFRESH_TOKEN=" in env_content:
+                        env_content = re.sub(r'ZALO_REFRESH_TOKEN=.*', f'ZALO_REFRESH_TOKEN={ZALO_REFRESH_TOKEN}', env_content)
+                    else:
+                        env_content += f"\nZALO_REFRESH_TOKEN={ZALO_REFRESH_TOKEN}\n"
+                    
+                    with open(env_path, "w", encoding="utf-8") as f:
+                        f.write(env_content)
+                return True
+            else:
+                logger.error("Failed to refresh token: %s", data)
+                return False
+        except Exception as e:
+            logger.error("Error during token refresh: %s", e)
+            return False
+
 
 
 def check_rate_limit(user_id: str) -> bool:
@@ -154,7 +208,7 @@ def verify_zalo_signature(request_body: bytes, mac_header: str) -> bool:
     return hmac.compare_digest(expected, mac_header)
 
 
-async def send_text_message(user_id: str, text: str):
+async def send_text_message(user_id: str, text: str, is_retry: bool = False):
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             f"{ZALO_API_URL}/message/cs",
@@ -170,11 +224,15 @@ async def send_text_message(user_id: str, text: str):
 
     result = response.json()
     if result.get("error") != 0:
+        if result.get("error") == -216 and not is_retry:
+            logger.warning("Token expired (-216). Attempting auto-refresh...")
+            if await _refresh_zalo_token():
+                return await send_text_message(user_id, text, is_retry=True)
         logger.error("Zalo send failed: %s", result)
     return result
 
 
-async def send_text_with_buttons(user_id: str, text: str, buttons: list[dict]):
+async def send_text_with_buttons(user_id: str, text: str, buttons: list[dict], is_retry: bool = False):
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             f"{ZALO_API_URL}/message/cs",
@@ -198,6 +256,10 @@ async def send_text_with_buttons(user_id: str, text: str, buttons: list[dict]):
 
     result = response.json()
     if result.get("error") != 0:
+        if result.get("error") == -216 and not is_retry:
+            logger.warning("Token expired (-216). Attempting auto-refresh...")
+            if await _refresh_zalo_token():
+                return await send_text_with_buttons(user_id, text, buttons, is_retry=True)
         logger.error("Zalo send buttons failed: %s", result)
     return result
 
