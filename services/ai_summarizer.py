@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import asyncio
+import re
 import time
 from collections import OrderedDict
 from typing import Any
@@ -124,7 +125,7 @@ def _get_model(text_length: int = 0) -> genai.GenerativeModel:
         model_name=model_name,
         generation_config=genai.GenerationConfig(
             temperature=0.2,
-            max_output_tokens=2048,  # Giảm từ 4096 → 2048 (JSON 5 ý không cần nhiều)
+            max_output_tokens=4096,
             response_mime_type="application/json",
         ),
     )
@@ -179,13 +180,91 @@ def _smart_truncate(text: str, max_total: int = 5000) -> str:
 
 # ===== JSON HELPERS =====
 
+def _repair_json(text: str) -> str:
+    """Sửa chữa JSON bị cắt cụt từ Gemini.
+    
+    Xử lý các trường hợp:
+    - Unterminated string (thiếu dấu ngoặc kép đóng)
+    - Thiếu dấu ] hoặc } ở cuối
+    - Cắt giữa chừng một object trong mảng
+    """
+    text = text.strip()
+    if not text:
+        return text
+    
+    # Bước 1: Đếm ngoặc mở/đóng
+    open_braces = text.count('{')
+    close_braces = text.count('}')
+    open_brackets = text.count('[')
+    close_brackets = text.count(']')
+    
+    # Nếu JSON đã hợp lệ, trả về ngay
+    if open_braces == close_braces and open_brackets == close_brackets:
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass  # Tiếp tục sửa
+    
+    # Bước 2: Sửa chuỗi bị cắt cụt (unterminated string)
+    # Tìm dấu " cuối cùng và kiểm tra xem có đang ở giữa string không
+    in_string = False
+    last_quote_pos = -1
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\' and in_string:
+            i += 2  # Bỏ qua ký tự escape
+            continue
+        if ch == '"':
+            in_string = not in_string
+            last_quote_pos = i
+        i += 1
+    
+    # Nếu đang mở string (số dấu " lẻ), đóng lại
+    if in_string:
+        # Cắt bỏ phần string dở dang và đóng lại
+        text = text + '"'
+        logger.info("JSON repair: closed unterminated string")
+    
+    # Bước 3: Cắt bỏ phần object/element dở dang cuối cùng nếu cần
+    # Tìm dấu phẩy cuối cùng không nằm trong string và xóa phần sau nó nếu bị cắt
+    try:
+        json.loads(text + ']' * (open_brackets - close_brackets) + '}' * (open_braces - close_braces))
+        text = text + ']' * (open_brackets - close_brackets) + '}' * (open_braces - close_braces)
+        logger.info("JSON repair: added missing brackets/braces")
+        return text
+    except json.JSONDecodeError:
+        pass
+    
+    # Bước 4: Phương án mạnh hơn — cắt bỏ element cuối nếu bị lỗi
+    # Tìm dấu phẩy hoặc '{' cuối cùng ở ngoài string
+    for cut_char in [',', '{']:
+        last_cut = text.rfind(cut_char)
+        if last_cut > 0:
+            candidate = text[:last_cut]
+            # Thêm đóng ngoặc
+            open_b = candidate.count('{')
+            close_b = candidate.count('}')
+            open_sq = candidate.count('[')
+            close_sq = candidate.count(']')
+            suffix = ']' * max(0, open_sq - close_sq) + '}' * max(0, open_b - close_b)
+            try:
+                result = candidate + suffix
+                json.loads(result)
+                logger.info("JSON repair: truncated broken tail and closed (cut at '%s')", cut_char)
+                return result
+            except json.JSONDecodeError:
+                continue
+    
+    return text  # Trả về nguyên bản nếu không sửa được
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
         if len(lines) >= 3:
-            # Skip the first line (e.g. ```json) and the last line (```)
-            # Find index of first ``` and last ```
             start_idx = text.find("\n")
             end_idx = text.rfind("```")
             if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
@@ -195,13 +274,26 @@ def _extract_json(text: str) -> dict[str, Any]:
     end = text.rfind("}")
     if start >= 0 and end > start:
         text = text[start : end + 1]
-        
+    elif start >= 0:
+        # Không tìm thấy dấu } → JSON bị cắt cụt hoàn toàn
+        text = text[start:]
+
+    # Thử parse trực tiếp trước
     try:
         return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Thử sửa chữa JSON
+    repaired = _repair_json(text)
+    try:
+        result = json.loads(repaired)
+        logger.info("JSON repaired successfully! Original: %s chars, Repaired: %s chars", 
+                    len(text), len(repaired))
+        return result
     except json.JSONDecodeError as e:
-        logger.error("JSON Decode error: %s. Text: %s", e, text)
-        # Attempt to repair common JSON errors if possible, but mainly raise
-        raise ValueError(f"AI trả về định dạng không chuẩn (JSONDecodeError): {e}")
+        logger.error("JSON repair failed. Original text (%s chars): %s", len(text), text[:500])
+        raise ValueError(f"AI trả về JSON bị lỗi không sửa được: {e}")
 
 
 def _normalize_points(data: dict[str, Any]) -> dict[str, Any]:
@@ -280,7 +372,7 @@ async def _call_gemini_with_fallback(content, text_length: int = 0) -> str:
                 model_name=model_name,
                 generation_config=genai.GenerationConfig(
                     temperature=0.2,
-                    max_output_tokens=2048,
+                    max_output_tokens=4096,
                     response_mime_type="application/json",
                 ),
             )
@@ -318,26 +410,28 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
     if cached:
         return cached
 
-    try:
-        prompt = _build_text_prompt(text)
-        response_text = await _call_gemini_with_fallback(prompt, len(text))
-        parsed = _extract_json(response_text)
-        normalized = _normalize_points(parsed)
-        logger.info("Summary generated: %s chars, cache stats: %s",
-                    len(response_text), _text_cache.stats)
+    last_error_msg = ""
+    for attempt in range(3):
+        try:
+            prompt = _build_text_prompt(text)
+            response_text = await _call_gemini_with_fallback(prompt, len(text))
+            parsed = _extract_json(response_text)
+            normalized = _normalize_points(parsed)
+            logger.info("Summary generated: %s chars, cache stats: %s, attempt: %s",
+                        len(response_text), _text_cache.stats, attempt + 1)
 
-        # Layer 1: Store in cache
-        _text_cache.put(text, normalized)
-        return normalized
+            # Layer 1: Store in cache
+            _text_cache.put(text, normalized)
+            return normalized
 
-    except Exception as exc:
-            logger.error("Summarization failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Summarization attempt %s failed: %s", attempt + 1, exc)
             if _is_quota_error(exc):
                 return {"error": QUOTA_MESSAGE}
-            
-            error_msg = str(exc)
-            # Dùng thẳng lỗi để hiển thị tạm cho dev sửa
-            return {"error": f"Lỗi tạo tóm tắt: {error_msg}. Vui lòng thử lại!"}
+            last_error_msg = str(exc)
+            await asyncio.sleep(1)
+
+    return {"error": f"Lỗi tạo tóm tắt sau 3 lần thử: {last_error_msg}. Vui lòng thử lại!"}
 
 
 async def summarize_image_structured(image_path: str) -> dict[str, Any]:
@@ -347,24 +441,29 @@ async def summarize_image_structured(image_path: str) -> dict[str, Any]:
     if cached:
         return cached
 
-    try:
-        image = Image.open(image_path)
-        response_text = await _call_gemini_with_fallback(
-            [_build_image_prompt(), image], text_length=500
-        )
-        parsed = _extract_json(response_text)
-        normalized = _normalize_points(parsed)
-        logger.info("Image summary generated: %s chars, cache stats: %s",
-                    len(response_text), _image_cache.stats)
+    last_error_msg = ""
+    for attempt in range(3):
+        try:
+            image = Image.open(image_path)
+            response_text = await _call_gemini_with_fallback(
+                [_build_image_prompt(), image], text_length=500
+            )
+            parsed = _extract_json(response_text)
+            normalized = _normalize_points(parsed)
+            logger.info("Image summary generated: %s chars, cache stats: %s, attempt: %s",
+                        len(response_text), _image_cache.stats, attempt + 1)
 
-        _image_cache.put(image_path, normalized)
-        return normalized
+            _image_cache.put(image_path, normalized)
+            return normalized
 
-    except Exception as exc:
-            logger.error("Image summarization failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Image summarization attempt %s failed: %s", attempt + 1, exc)
             if _is_quota_error(exc):
                 return {"error": QUOTA_MESSAGE}
-            return {"error": GENERIC_IMAGE_ERROR}
+            last_error_msg = str(exc)
+            await asyncio.sleep(1)
+
+    return {"error": f"Xin lỗi, tôi không thể đọc nội dung trong ảnh lúc này. Chi tiết lỗi: {last_error_msg}"}
 
 
 # ===== BACKWARD COMPATIBLE WRAPPERS =====

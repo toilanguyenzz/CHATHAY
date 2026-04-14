@@ -22,6 +22,7 @@ from config import config
 from services.ai_summarizer import summarize_image_structured, summarize_text_structured
 from services.document_parser import extract_text, get_file_type
 from services.tts_service import cleanup_audio, text_to_speech
+from services.token_store import load_tokens, save_tokens, get_token_info
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -29,8 +30,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ZALO_OA_ACCESS_TOKEN = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
-ZALO_REFRESH_TOKEN = os.getenv("ZALO_REFRESH_TOKEN", "")
+ZALO_TEXT_LIMIT = 2900
+
+# Load tokens: ưu tiên DB (đã refresh) > biến môi trường (lần đầu)
+_env_access = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
+_env_refresh = os.getenv("ZALO_REFRESH_TOKEN", "")
+ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN = load_tokens(_env_access, _env_refresh)
+
+# Nếu env có token mới hơn (lần deploy đầu tiên), lưu vào DB
+if _env_access and ZALO_OA_ACCESS_TOKEN == _env_access:
+    save_tokens(_env_access, _env_refresh)
+
+logger.info("Loaded tokens — Access: %s chars, Refresh: %s chars",
+            len(ZALO_OA_ACCESS_TOKEN), len(ZALO_REFRESH_TOKEN))
+
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
 ZALO_APP_SECRET = os.getenv("ZALO_APP_SECRET", ZALO_OA_SECRET)
 ZALO_APP_ID = os.getenv("ZALO_APP_ID", "1534343952928885811")
@@ -40,7 +53,6 @@ ZALO_VERIFICATION_CODE = os.getenv(
     "ZALO_VERIFICATION_CODE",
     "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t",
 )
-ZALO_TEXT_LIMIT = 2900
 
 user_daily_usage: dict[str, dict[str, int | str]] = {}
 latest_summary_by_user: dict[str, dict[str, Any]] = {}
@@ -73,21 +85,9 @@ async def _refresh_zalo_token() -> bool:
                 ZALO_REFRESH_TOKEN = data.get("refresh_token", ZALO_REFRESH_TOKEN)
                 logger.info("Zalo token auto-refreshed successfully!")
                 
-                # Update into .env file locally
-                env_path = os.path.join(os.path.dirname(__file__), ".env")
-                if os.path.exists(env_path):
-                    with open(env_path, "r", encoding="utf-8") as f:
-                        env_content = f.read()
-                    
-                    import re
-                    env_content = re.sub(r'ZALO_OA_ACCESS_TOKEN=.*', f'ZALO_OA_ACCESS_TOKEN={ZALO_OA_ACCESS_TOKEN}', env_content)
-                    if "ZALO_REFRESH_TOKEN=" in env_content:
-                        env_content = re.sub(r'ZALO_REFRESH_TOKEN=.*', f'ZALO_REFRESH_TOKEN={ZALO_REFRESH_TOKEN}', env_content)
-                    else:
-                        env_content += f"\nZALO_REFRESH_TOKEN={ZALO_REFRESH_TOKEN}\n"
-                    
-                    with open(env_path, "w", encoding="utf-8") as f:
-                        f.write(env_content)
+                # Lưu vào SQLite — sống sót qua mọi lần restart
+                save_tokens(ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN)
+                
                 return True
             else:
                 logger.error("Failed to refresh token: %s", data)
@@ -361,6 +361,41 @@ async def zalo_verifier():
 @app.get("/webhook/zalo")
 async def webhook_verify():
     return JSONResponse(content={"status": "ok", "message": "Zalo webhook is active"}, status_code=200)
+
+
+@app.get("/debug/tokens")
+async def debug_tokens():
+    """Endpoint debug: xem trạng thái token hiện tại."""
+    info = get_token_info()
+    info["memory_access_token_len"] = len(ZALO_OA_ACCESS_TOKEN)
+    info["memory_refresh_token_len"] = len(ZALO_REFRESH_TOKEN)
+    return JSONResponse(content=info, status_code=200)
+
+
+@app.post("/api/update-tokens")
+async def api_update_tokens(request: Request):
+    """Endpoint cập nhật token từ xa — không cần vào Railway Dashboard."""
+    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN
+    try:
+        body = await request.json()
+        secret = body.get("secret", "")
+        if secret != ZALO_APP_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid secret")
+        
+        new_access = body.get("access_token", "")
+        new_refresh = body.get("refresh_token", "")
+        if not new_access or not new_refresh:
+            return JSONResponse(content={"error": "Missing access_token or refresh_token"}, status_code=400)
+        
+        ZALO_OA_ACCESS_TOKEN = new_access
+        ZALO_REFRESH_TOKEN = new_refresh
+        save_tokens(new_access, new_refresh)
+        
+        return JSONResponse(content={"status": "ok", "message": "Tokens updated successfully"}, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
 

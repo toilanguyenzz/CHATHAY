@@ -12,7 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create temp directories
-RUN mkdir -p temp/audio
+# Create directories for temp files and persistent data
+RUN mkdir -p temp/audio /data
+
+# SQLite token store location — mount Railway Volume tại /data
+ENV DATA_DIR=/data
 
 CMD ["python", "-m", "uvicorn", "zalo_webhook:app", "--host", "0.0.0.0", "--port", "8000"]
