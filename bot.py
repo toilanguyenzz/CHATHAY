@@ -666,6 +666,34 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== MAIN =====
 
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command with dynamic summary positioning."""
+    welcome = """👋 **Xin chào! Tôi là Trợ lý AI Tài liệu.**
+
+📄 Gửi cho tôi bất kỳ file nào:
+• **PDF** — hợp đồng, văn bản, báo cáo
+• **Word** (.docx) — tài liệu văn phòng
+• **Ảnh chụp** — đơn thuốc, hóa đơn, giấy tờ
+• **Ghi âm** 🎤 — hỏi bằng giọng nói
+
+🔎 Tôi sẽ:
+1️⃣ Đọc và phân tích nội dung
+2️⃣ Tóm tắt theo **độ dài và độ phức tạp** của tài liệu
+3️⃣ Đọc to bằng **giọng nói tiếng Việt** 🔊
+4️⃣ **Nhớ tài liệu** của bạn để hỏi lại bất cứ lúc nào
+
+⏱ Chỉ mất **30 giây** — nhanh hơn tự đọc!
+
+📌 Gói miễn phí: **{limit} tài liệu/ngày**
+
+**Lệnh hữu ích:**
+/files — 📋 Xem danh sách file đã gửi
+/remaining — 📊 Xem số lượt còn lại
+
+Gửi file ngay để thử! 👇""".format(limit=config.FREE_DAILY_LIMIT)
+
+    await safe_send(update.message.reply_text, welcome, parse_mode="Markdown")
+
 def main():
     """Start the Telegram bot."""
     if not config.TELEGRAM_BOT_TOKEN:
