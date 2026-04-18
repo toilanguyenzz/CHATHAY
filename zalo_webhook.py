@@ -107,6 +107,11 @@ latest_summary_by_user: dict[str, dict[str, Any]] = {}
 last_image_url_by_user: dict[str, str] = {}  # Lưu URL ảnh gần nhất để trích xuất chữ khi cần
 _token_lock = asyncio.Lock()
 
+# Tối ưu chống spam: cooldown giữa các tin nhắn
+user_cooldowns: dict[str, float] = {}
+user_warnings: dict[str, float] = {}
+COOLDOWN_SECONDS = 15
+
 # ═══════════════════════════════════════════════════════════════
 # TOKEN REFRESH
 # ═══════════════════════════════════════════════════════════════
@@ -1022,6 +1027,23 @@ async def process_webhook_event(body: dict):
         sender_id = body.get("sender", {}).get("id", "")
         logger.info("Processing event: %s from %s", event_name, sender_id)
 
+        # ── HỆ THỐNG CHỐNG SPAM (COOLDOWN) ──
+        if sender_id and event_name in {"user_send_text", "user_send_image", "user_send_file"}:
+            now = time.time()
+            last_time = user_cooldowns.get(sender_id, 0)
+            if now - last_time < COOLDOWN_SECONDS:
+                last_warn = user_warnings.get(sender_id, 0)
+                if now - last_warn > 60:  # Chỉ báo nhắc nhở 1 lần mỗi phút để tránh Zalo rate limit
+                    user_warnings[sender_id] = now
+                    # Fire & forget warning message
+                    asyncio.create_task(send_text_message(
+                        sender_id,
+                        f"⏳ Bạn gửi quá nhanh! Hệ thống chống chống spam đã được bật.\n\nVui lòng nhắn chậm lại, cách nhau ít nhất {COOLDOWN_SECONDS} giây nhé."
+                    ))
+                logger.warning(f"SPAM BLOCKED: User {sender_id} sent message within cooldown.")
+                return  # Skip processing this event silently to save server loads
+            user_cooldowns[sender_id] = now
+
         # Ghi nhận tương tác → refresh cửa sổ 7 ngày cho deadline reminder
         if sender_id:
             update_user_interaction(sender_id)
@@ -1183,9 +1205,17 @@ async def handle_zalo_text(user_id: str, text: str):
     if await handle_interactive_command(user_id, normalized):
         return
 
-    # Text quá ngắn → hướng dẫn gửi file
-    if len(text.strip()) < 10:
-        await send_text_message(user_id, get_upload_prompt())
+    # ── HEURISTIC FILTER: Chặn hỏi đáp tào lao để tiết kiệm token ──
+    # Cản người dùng nhầm đây là ChatGPT: "chào bạn", "bạn là ai", "chatgpt à", v.v.
+    useless_keywords = ["chào", "hello", "hi", "bạn là ai", "chatgpt", "chat gpt", "làm gì", "như thế nào", "ai tạo ra", "có phải", "tử vi", "xem bói"]
+    is_useless = any(kw in normalized for kw in useless_keywords) and len(normalized) < 50
+    if len(text.strip()) < 15 or is_useless:
+        await send_text_message(
+            user_id, 
+            "👋 Chào bạn, mình là trợ lý đọc tài liệu chuyên nghiệp (không phải bot chat/trò chuyện).\n\n"
+            "Hãy gửi cho mình **file PDF/Word hoặc Ảnh tài liệu/Hóa đơn**, mình sẽ tóm tắt, giúp bạn xem chi tiết hoặc sắp xếp deadline nhé!\n"
+            "Nhắn 'MENU' để xem hướng dẫn."
+        )
         return
 
     # Text dài → tóm tắt AI
@@ -1324,6 +1354,18 @@ async def handle_zalo_image(user_id: str, image_url: str):
         doc_type = structured.get("document_type", "general")
         recommended_action = structured.get("recommended_action", "standard_summary")
         credentials = structured.get("credentials")
+
+        # ═══ TỐI ƯU TOKEN: Không tóm tắt ảnh phong cảnh/selfie ═══
+        if doc_type == "photo":
+            await send_text_message(
+                user_id, 
+                "Xin lỗi, có vẻ đây là ảnh chụp thông thường (phong cảnh, người, đồ vật). Mình chỉ có thể đọc và tóm tắt **tài liệu, văn bản, hóa đơn hoặc hợp đồng** thôi nhé!"
+            )
+            # Khôi phục lại lượt dùng (refund token)
+            today = time.strftime("%Y-%m-%d")
+            if user_daily_usage.get(user_id, {}).get("date") == today:
+                user_daily_usage[user_id]["count"] = max(0, int(user_daily_usage[user_id]["count"]) - 1)
+            return
 
         # ═══ NHÁNH Y TẾ: ĐƠN THUỐC — warning y tế ═══
         if doc_type == "medical" and recommended_action == "medical_warning":
