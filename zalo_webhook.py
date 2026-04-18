@@ -1038,7 +1038,8 @@ async def process_webhook_event(body: dict):
                     # Fire & forget warning message
                     asyncio.create_task(send_text_message(
                         sender_id,
-                        f"⏳ Bạn gửi quá nhanh! Hệ thống chống spam đã được bật.\n\nVui lòng nhắn chậm lại, cách nhau ít nhất {COOLDOWN_SECONDS} giây nhé."
+                        f"☕ Từ từ nhé bạn ơi! Mình cần chút thời gian để xử lý mỗi yêu cầu thật chu đáo.\n\n"
+                        f"Gửi lại sau {COOLDOWN_SECONDS} giây là mình sẵn sàng phục vụ ngay thôi ạ! 😊"
                     ))
                 logger.warning(f"SPAM BLOCKED: User {sender_id} sent message within cooldown.")
                 return  # Skip processing this event silently to save server loads
@@ -1205,8 +1206,8 @@ async def handle_zalo_text(user_id: str, text: str):
     if await handle_interactive_command(user_id, normalized):
         return
 
-    # ── HEURISTIC FILTER: Chặn hỏi đáp tào lao để tiết kiệm token ──
-    # Cản người dùng nhầm đây là ChatGPT hoặc gõ linh tinh
+    # ── SMART REDIRECT: Hướng dẫn mềm mại khi user nhắn linh tinh ──
+    # Không chặn thô thiển, mà dẫn dắt user hiểu cách dùng
     _useless_exact = {"chào", "hello", "hi", "hey", "alo", "ok", "oke", "haha", "hehe", "gì", "sao", "ơi", "ê", "yo"}
     _useless_phrases = ["bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói", "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt"]
     is_exact_useless = normalized in _useless_exact
@@ -1214,9 +1215,13 @@ async def handle_zalo_text(user_id: str, text: str):
     if len(text.strip()) < 15 or is_exact_useless or is_phrase_useless:
         await send_text_message(
             user_id, 
-            "👋 Chào bạn, mình là trợ lý đọc tài liệu chuyên nghiệp (không phải bot chat/trò chuyện).\n\n"
-            "Hãy gửi cho mình **file PDF/Word hoặc Ảnh tài liệu/Hóa đơn**, mình sẽ tóm tắt, giúp bạn xem chi tiết hoặc sắp xếp deadline nhé!\n"
-            "Nhắn 'MENU' để xem hướng dẫn."
+            "👋 Chào bạn! Mình là CHAT HAY — chuyên gia đọc tài liệu bằng AI.\n\n"
+            "💡 Mình có thể giúp bạn:\n"
+            "  📎 Gửi file PDF/Word → Tóm tắt nhanh 5 ý chính\n"
+            "  🖼️ Chụp ảnh hợp đồng/hóa đơn → Đọc và phân tích\n"
+            "  ⏰ Phát hiện deadline → Tự nhắc nhở đúng hạn\n"
+            "  🔒 Lưu mật khẩu → Kho bí mật an toàn\n\n"
+            "Thử gửi 1 tấm ảnh hoặc file cho mình xem nhé! 😊"
         )
         return
 
@@ -1357,11 +1362,17 @@ async def handle_zalo_image(user_id: str, image_url: str):
         recommended_action = structured.get("recommended_action", "standard_summary")
         credentials = structured.get("credentials")
 
-        # ═══ TỐI ƯU TOKEN: Không tóm tắt ảnh phong cảnh/selfie ═══
+        # ═══ ẢNH THƯỜNG: Hướng dẫn nhẹ nhàng ═══
         if doc_type == "photo":
             await send_text_message(
                 user_id, 
-                "Xin lỗi, có vẻ đây là ảnh chụp thông thường (phong cảnh, người, đồ vật). Mình chỉ có thể đọc và tóm tắt **tài liệu, văn bản, hóa đơn hoặc hợp đồng** thôi nhé!"
+                "🖼️ Ảnh đẹp quá! Nhưng mình sẽ phát huy tốt hơn với tài liệu nhé 😊\n\n"
+                "Hãy thử gửi cho mình:\n"
+                "  📎 Hợp đồng, công văn, quyết định\n"
+                "  🧳 Hóa đơn, biên lai\n"
+                "  💊 Đơn thuốc, phiếu xét nghiệm\n"
+                "  📝 Bảng điểm, thông báo trường học\n\n"
+                "Mình sẽ tóm tắt, trích xuất deadline và nhắc nhở bạn đúng hạn!"
             )
             # Không cần refund vì increment_usage chưa được gọi ở thời điểm này
             return
