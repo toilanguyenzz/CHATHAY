@@ -1038,7 +1038,7 @@ async def process_webhook_event(body: dict):
                     # Fire & forget warning message
                     asyncio.create_task(send_text_message(
                         sender_id,
-                        f"⏳ Bạn gửi quá nhanh! Hệ thống chống chống spam đã được bật.\n\nVui lòng nhắn chậm lại, cách nhau ít nhất {COOLDOWN_SECONDS} giây nhé."
+                        f"⏳ Bạn gửi quá nhanh! Hệ thống chống spam đã được bật.\n\nVui lòng nhắn chậm lại, cách nhau ít nhất {COOLDOWN_SECONDS} giây nhé."
                     ))
                 logger.warning(f"SPAM BLOCKED: User {sender_id} sent message within cooldown.")
                 return  # Skip processing this event silently to save server loads
@@ -1206,10 +1206,12 @@ async def handle_zalo_text(user_id: str, text: str):
         return
 
     # ── HEURISTIC FILTER: Chặn hỏi đáp tào lao để tiết kiệm token ──
-    # Cản người dùng nhầm đây là ChatGPT: "chào bạn", "bạn là ai", "chatgpt à", v.v.
-    useless_keywords = ["chào", "hello", "hi", "bạn là ai", "chatgpt", "chat gpt", "làm gì", "như thế nào", "ai tạo ra", "có phải", "tử vi", "xem bói"]
-    is_useless = any(kw in normalized for kw in useless_keywords) and len(normalized) < 50
-    if len(text.strip()) < 15 or is_useless:
+    # Cản người dùng nhầm đây là ChatGPT hoặc gõ linh tinh
+    _useless_exact = {"chào", "hello", "hi", "hey", "alo", "ok", "oke", "haha", "hehe", "gì", "sao", "ơi", "ê", "yo"}
+    _useless_phrases = ["bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói", "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt"]
+    is_exact_useless = normalized in _useless_exact
+    is_phrase_useless = any(kw in normalized for kw in _useless_phrases) and len(normalized) < 60
+    if len(text.strip()) < 15 or is_exact_useless or is_phrase_useless:
         await send_text_message(
             user_id, 
             "👋 Chào bạn, mình là trợ lý đọc tài liệu chuyên nghiệp (không phải bot chat/trò chuyện).\n\n"
@@ -1361,10 +1363,7 @@ async def handle_zalo_image(user_id: str, image_url: str):
                 user_id, 
                 "Xin lỗi, có vẻ đây là ảnh chụp thông thường (phong cảnh, người, đồ vật). Mình chỉ có thể đọc và tóm tắt **tài liệu, văn bản, hóa đơn hoặc hợp đồng** thôi nhé!"
             )
-            # Khôi phục lại lượt dùng (refund token)
-            today = time.strftime("%Y-%m-%d")
-            if user_daily_usage.get(user_id, {}).get("date") == today:
-                user_daily_usage[user_id]["count"] = max(0, int(user_daily_usage[user_id]["count"]) - 1)
+            # Không cần refund vì increment_usage chưa được gọi ở thời điểm này
             return
 
         # ═══ NHÁNH Y TẾ: ĐƠN THUỐC — warning y tế ═══
