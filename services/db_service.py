@@ -23,6 +23,16 @@ _memory_documents: dict[int, OrderedDict] = {}
 _memory_active_doc: dict[int, str] = {}
 MAX_DOCS_PER_USER = 5
 
+# ===== VAULT & PENDING ACTION (SMART BOT) =====
+# Vault: lưu mật khẩu/tài khoản mã hóa cho từng user
+# Key: user_id -> list of {app_name, url, username, password, saved_at}
+_memory_vault: dict[int | str, list[dict]] = {}
+
+# Pending Action: bot đang chờ user phản hồi gì
+# Key: user_id -> {action, data, expires_at}
+# action: "confirm_save_vault" | "ask_name_for_task" | None
+_memory_pending_action: dict[int | str, dict] = {}
+
 
 # ===== DB METHODS =====
 
@@ -189,3 +199,87 @@ def get_user_docs(user_id: int) -> list:
         doc_copy["id"] = doc_id
         docs.append(doc_copy)
     return docs
+
+
+# ===== VAULT METHODS =====
+
+def save_vault_credential(user_id: int | str, app_name: str, url: str, username: str, password: str):
+    """Lưu một credential vào vault của user."""
+    if user_id not in _memory_vault:
+        _memory_vault[user_id] = []
+
+    # Kiểm tra trùng → cập nhật
+    for cred in _memory_vault[user_id]:
+        if cred["app_name"].lower() == app_name.lower():
+            cred["url"] = url
+            cred["username"] = username
+            cred["password"] = password
+            cred["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
+            logger.info("Vault updated credential '%s' for user %s", app_name, user_id)
+            return
+
+    _memory_vault[user_id].append({
+        "app_name": app_name,
+        "url": url,
+        "username": username,
+        "password": password,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M"),
+    })
+    logger.info("Vault saved credential '%s' for user %s", app_name, user_id)
+
+
+def get_vault_credential(user_id: int | str, keyword: str) -> dict | None:
+    """Tìm credential theo keyword (tên app/URL). Fuzzy match."""
+    if user_id not in _memory_vault:
+        return None
+
+    keyword_lower = keyword.lower().strip()
+    for cred in _memory_vault[user_id]:
+        if (keyword_lower in cred["app_name"].lower()
+                or keyword_lower in cred.get("url", "").lower()):
+            return cred
+    return None
+
+
+def list_vault_credentials(user_id: int | str) -> list[dict]:
+    """Liệt kê tất cả credentials của user (ẩn mật khẩu)."""
+    if user_id not in _memory_vault:
+        return []
+    result = []
+    for cred in _memory_vault[user_id]:
+        result.append({
+            "app_name": cred["app_name"],
+            "url": cred.get("url", ""),
+            "username": cred["username"],
+            "saved_at": cred.get("saved_at", ""),
+        })
+    return result
+
+
+# ===== PENDING ACTION METHODS =====
+
+def set_pending_action(user_id: int | str, action: str, data: dict):
+    """Đặt trạng thái chờ phản hồi. Tự hết hạn sau 5 phút."""
+    _memory_pending_action[user_id] = {
+        "action": action,
+        "data": data,
+        "expires_at": time.time() + 300,  # 5 phút
+    }
+    logger.info("Pending action set for user %s: %s", user_id, action)
+
+
+def get_pending_action(user_id: int | str) -> dict | None:
+    """Lấy pending action nếu còn hiệu lực."""
+    pending = _memory_pending_action.get(user_id)
+    if not pending:
+        return None
+    if time.time() > pending["expires_at"]:
+        del _memory_pending_action[user_id]
+        return None
+    return pending
+
+
+def clear_pending_action(user_id: int | str):
+    """Xóa pending action sau khi xử lý xong."""
+    _memory_pending_action.pop(user_id, None)
+

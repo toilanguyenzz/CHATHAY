@@ -34,6 +34,27 @@ from services.ai_summarizer import (
 from services.document_parser import extract_text, get_file_type
 from services.tts_service import cleanup_audio, text_to_speech
 from services.token_store import load_tokens, save_tokens, get_token_info
+from services.db_service import (
+    save_vault_credential,
+    get_vault_credential,
+    list_vault_credentials,
+    set_pending_action,
+    get_pending_action,
+    clear_pending_action,
+)
+from services.deadline_service import (
+    save_deadlines_from_summary,
+    get_user_deadlines,
+    get_upcoming_deadlines,
+    mark_deadline_done,
+    format_deadline_list,
+    format_deadline_saved_notice,
+    update_user_interaction,
+    get_pending_notifications,
+    set_message_sender,
+    start_reminder_scheduler,
+    stop_reminder_scheduler,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -375,10 +396,13 @@ def get_menu_message() -> str:
         "• Nhắn số 1-8 → Xem chi tiết từng ý\n"
         "• NGHE 1, NGHE 2… → Nghe audio từng ý\n"
         "• TRICH XUAT → Trích xuất chữ từ ảnh vừa gửi\n"
+        "• DEADLINE → Xem tất cả deadline sắp đến\n"
+        "• XONG [keyword] → Đánh dấu deadline hoàn thành\n"
         "• MENU → Xem bảng này\n\n"
         "✨ Tại sao chọn CHAT HAY?\n"
         "• Phân tích nội dung tài liệu chuyên sâu\n"
-        "• Phân loại tài liệu tự động (hóa đơn, hợp đồng…)\n\n"
+        "• Phân loại tài liệu tự động (hóa đơn, hợp đồng…)\n"
+        "• ⏰ Tự trích xuất deadline & nhắc nhở đúng hạn\n\n"
         f"📊 Miễn phí: {config.FREE_DAILY_LIMIT} lượt/ngày"
     )
 
@@ -617,6 +641,73 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
             await send_long_text_message(user_id, detail_text, detail_buttons)
             return True
 
+    # ── MẬT KHẨU [keyword] — Vault retrieval ──
+    if normalized.startswith(("mật khẩu", "mat khau", "password", "tk ", "tài khoản")):
+        keyword = normalized
+        for prefix in ["mật khẩu", "mat khau", "password", "tk", "tài khoản"]:
+            keyword = keyword.replace(prefix, "").strip()
+        if keyword:
+            cred = get_vault_credential(user_id, keyword)
+            if cred:
+                msg = (
+                    f"🔐 Thông tin đăng nhập **{cred['app_name']}**:\n\n"
+                    f"• Trang: {cred.get('url', 'không rõ')}\n"
+                    f"• Tài khoản: {cred['username']}\n"
+                    f"• Mật khẩu: {cred['password']}\n\n"
+                    f"Lưu trữ ngày {cred.get('saved_at', '')}. Chỉ bạn nhìn thấy tin nhắn này."
+                )
+                await send_text_message(user_id, msg)
+                return True
+            else:
+                # Liệt kê những gì đang lưu
+                all_creds = list_vault_credentials(user_id)
+                if all_creds:
+                    names = ", ".join(c["app_name"] for c in all_creds)
+                    await send_text_message(
+                        user_id,
+                        f"Không tìm thấy '{keyword}'. Bạn đang lưu: {names}.\n"
+                        "Nhắn 'mật khẩu [tên]' để xem."
+                    )
+                else:
+                    await send_text_message(user_id, "Bạn chưa lưu mật khẩu nào. Gửi ảnh chụp màn hình có tài khoản để mình lưu giúp nhé!")
+                return True
+
+    # ── DANH SÁCH MẬT KHẨU ──
+    if normalized in {"vault", "kho mat khau", "kho mật khẩu", "ds mat khau", "ds mật khẩu"}:
+        all_creds = list_vault_credentials(user_id)
+        if all_creds:
+            lines = ["🔐 Kho mật khẩu của bạn:"]
+            for c in all_creds:
+                lines.append(f"  • {c['app_name']} ({c['username']}) — lưu {c['saved_at']}")
+            lines.append("\nNhắn 'mật khẩu [tên]' để xem chi tiết.")
+            await send_text_message(user_id, "\n".join(lines))
+        else:
+            await send_text_message(user_id, "Bạn chưa lưu mật khẩu nào. Gửi ảnh chụp màn hình có tài khoản để mình lưu giúp nhé!")
+        return True
+
+    # ── DEADLINE / LỊCH — Xem tất cả deadline ──
+    if normalized in {"deadline", "deadlines", "lich", "lịch", "han", "hạn", "nhac nho", "nhắc nhở", "xem deadline"}:
+        deadlines = get_user_deadlines(user_id)
+        msg = format_deadline_list(deadlines)
+        await send_text_message(user_id, msg)
+        return True
+
+    # ── XONG [keyword] — Đánh dấu deadline hoàn thành ──
+    if normalized.startswith(("xong ", "done ", "hoan thanh ", "hoàn thành ")):
+        keyword = normalized
+        for prefix in ["xong", "done", "hoan thanh", "hoàn thành"]:
+            keyword = keyword.replace(prefix, "").strip()
+        if keyword:
+            if mark_deadline_done(user_id, keyword):
+                await send_text_message(user_id, f"✅ Đã đánh dấu hoàn thành deadline liên quan đến '{keyword}'!")
+            else:
+                await send_text_message(
+                    user_id,
+                    f"Không tìm thấy deadline nào liên quan đến '{keyword}'.\n"
+                    "Nhắn 'DEADLINE' để xem danh sách."
+                )
+            return True
+
     return False
 
 
@@ -657,13 +748,24 @@ async def handle_ocr_request(user_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("CHAT HAY v2.0 — Zalo OA Webhook Server starting...")
+    logger.info("CHAT HAY v2.1 — Zalo OA Webhook Server starting...")
     logger.info("OA Token set: %s", "YES" if ZALO_OA_ACCESS_TOKEN else "NO")
     logger.info("OA Secret set: %s", "YES" if ZALO_OA_SECRET else "NO")
     logger.info("App ID: %s", ZALO_APP_ID)
-    logger.info("Features: OCR ✓ | Doc Classification ✓ | TTS ✓")
+    logger.info("Features: OCR ✓ | Doc Classification ✓ | TTS ✓ | Deadline Reminder ✓")
     logger.info("=" * 60)
+
+    # Inject message sender vào deadline service (tránh circular import)
+    set_message_sender(send_text_message)
+
+    # Khởi động background scheduler nhắc nhở deadline
+    scheduler_task = asyncio.create_task(start_reminder_scheduler())
+
     yield
+
+    # Cleanup
+    stop_reminder_scheduler()
+    scheduler_task.cancel()
     logger.info("Server shutting down...")
 
 
@@ -920,21 +1022,29 @@ async def process_webhook_event(body: dict):
         sender_id = body.get("sender", {}).get("id", "")
         logger.info("Processing event: %s from %s", event_name, sender_id)
 
+        # Ghi nhận tương tác → refresh cửa sổ 7 ngày cho deadline reminder
+        if sender_id:
+            update_user_interaction(sender_id)
+
         if event_name == "follow":
             await send_text_message(sender_id, get_welcome_message())
             return
 
         if event_name == "user_send_text":
+            # Gửi nhắc nhở deadline tích lũy khi user quay lại
+            await _send_pending_deadline_notifications(sender_id)
             await handle_zalo_text(sender_id, body.get("message", {}).get("text", ""))
             return
 
         if event_name == "user_send_image":
+            await _send_pending_deadline_notifications(sender_id)
             attachments = body.get("message", {}).get("attachments", [])
             if attachments:
                 await handle_zalo_image(sender_id, attachments[0].get("payload", {}).get("url", ""))
             return
 
         if event_name == "user_send_file":
+            await _send_pending_deadline_notifications(sender_id)
             attachments = body.get("message", {}).get("attachments", [])
             if attachments:
                 payload = attachments[0].get("payload", {})
@@ -949,6 +1059,23 @@ async def process_webhook_event(body: dict):
         logger.info("Unhandled event: %s", event_name)
     except Exception as exc:
         logger.error("Error processing event: %s", exc, exc_info=True)
+
+
+async def _send_pending_deadline_notifications(user_id: str):
+    """Gửi nhắc nhở deadline tích lũy khi user quay lại tương tác."""
+    try:
+        pending = get_pending_notifications(user_id)
+        if not pending:
+            return
+
+        from services.deadline_service import format_reminder_message, mark_reminder_sent
+        for dl in pending[:3]:  # Tối đa 3 nhắc nhở cùng lúc
+            msg = format_reminder_message(dl, "today")
+            await send_text_message(user_id, msg)
+            mark_reminder_sent(user_id, dl, "today")
+            await asyncio.sleep(0.5)
+    except Exception as exc:
+        logger.error("Pending deadline notification error: %s", exc)
 
 
 @app.post("/webhook/zalo")
@@ -975,10 +1102,84 @@ async def zalo_webhook(request: Request, background_tasks: BackgroundTasks):
 # ═══════════════════════════════════════════════════════════════
 
 async def handle_zalo_text(user_id: str, text: str):
-    """Xử lý text nhận từ user."""
+    """Xử lý text nhận từ user — smart flow với pending actions."""
     normalized = text.strip().lower()
 
-    # Lệnh tương tác (menu, số, nghe, chi tiết...)
+    # ── PENDING ACTION: Bot đang chờ user trả lời gì đó (Silent Mode) ──
+    pending = get_pending_action(user_id)
+    if pending:
+        action = pending["action"]
+        data = pending["data"]
+
+        # User xác nhận lưu mật khẩu
+        if action == "confirm_save_vault":
+            if normalized in {"lưu", "luu", "có", "co", "save", "lưu lại", "luu lai"}:
+                save_vault_credential(
+                    user_id,
+                    data.get("app_name", "Không rõ"),
+                    data.get("url", ""),
+                    data.get("username", ""),
+                    data.get("password", ""),
+                )
+                clear_pending_action(user_id)
+                app_name = data.get("app_name", "hệ thống")
+                await send_text_message(
+                    user_id,
+                    f"✅ Đã lưu mã hóa thành công!\n"
+                    f"Lần sau nhắn 'mật khẩu {app_name}' để xem lại nhé. "
+                    f"Chỉ bạn mới thấy được."
+                )
+                return
+            elif normalized in {"không", "khong", "không cần", "khong can", "thôi", "thoi", "no"}:
+                clear_pending_action(user_id)
+                return
+
+        # Hidden Feature: User nhắn tìm tên/tài khoản
+        if action in {"ask_name_for_task", "ask_name_for_account"}:
+            # Chỉ kích hoạt nếu user gõ có vẻ đang tìm kiếm (có keyword) hoặc text ngắn (chỉ gõ tên)
+            is_search = any(kw in normalized for kw in ["tìm", "tim", "tên", "ten", "tài khoản", "tai khoan", "việc", "viec"])
+            is_short_name = len(normalized.split()) <= 4
+            
+            if is_search or is_short_name:
+                user_name = text.replace("tìm", "").replace("tên", "").replace("tài khoản", "").replace("của", "").strip()
+                if not user_name:
+                    user_name = text.strip()
+                    
+                clear_pending_action(user_id)
+                doc_text = data.get("text", "")
+                file_name = data.get("file_name", "tài liệu")
+
+                if action == "ask_name_for_task":
+                    await send_text_message(user_id, f"🔍 Đang rà soát việc được giao cho '{user_name}'...")
+                    prompt = (
+                        f"Tài liệu sau là quyết định phân công nhiệm vụ.\n"
+                        f"Hãy tìm TẤT CẢ nhiệm vụ được giao cho người tên '{user_name}'.\n"
+                        f"Với mỗi nhiệm vụ, nêu rõ: nội dung việc, deadline (nếu có).\n"
+                        f"Nếu không thấy, trả lời 'Không tìm thấy thông tin của {user_name}'.\n\n"
+                        f"NỘI DUNG TÀI LIỆU:\n{doc_text[:8000]}"
+                    )
+                else:
+                    await send_text_message(user_id, f"🔍 Đang trích xuất tài khoản của '{user_name}'...")
+                    prompt = (
+                        f"Tài liệu sau là danh sách thông tin đăng nhập.\n"
+                        f"Hãy tìm chính xác tài khoản, mật khẩu, và tên hệ thống của người tên '{user_name}'.\n"
+                        f"Định dạng: Hệ thống: ... | Tài khoản: ... | Mật khẩu: ...\n"
+                        f"Nếu không thấy, báo 'Không tìm thấy {user_name}'. Trả lời ngắn gọn ngập tức.\n\n"
+                        f"NỘI DUNG TÀI LIỆU:\n{doc_text[:8000]}"
+                    )
+
+                result = await summarize_text_structured(prompt)
+                if result.get("error"):
+                    await send_text_message(user_id, str(result["error"]))
+                else:
+                    points = result.get("points", [])
+                    if points:
+                        await send_text_message(user_id, f"💡 Kết quả cho '{user_name}':\n\n{points[0].get('detail', '')}")
+                    else:
+                        await send_text_message(user_id, result.get("overview", "Không tìm thấy thông tin."))
+                return
+
+    # Lệnh tương tác (menu, số, nghe, chi tiết, vault...)
     if await handle_interactive_command(user_id, normalized):
         return
 
@@ -1007,7 +1208,7 @@ async def handle_zalo_text(user_id: str, text: str):
 
 
 async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_size):
-    """Xử lý file PDF/Word từ user."""
+    """Xử lý file PDF/Word từ user — smart flow: phát hiện phân công nhiệm vụ."""
     try:
         file_size = int(file_size)
     except (ValueError, TypeError):
@@ -1053,9 +1254,34 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             await send_text_message(user_id, str(structured["error"]))
             return
 
+        doc_type = structured.get("document_type", "general")
+        recommended_action = structured.get("recommended_action", "standard_summary")
+
+        # ── SILENT STATE: AI nhận diện ý định tiềm ẩn ──
+        if recommended_action == "ask_name_for_task":
+            # Set action âm thầm, chờ user trigger bằng lệnh tìm kiếm
+            set_pending_action(user_id, "ask_name_for_task", {
+                "file_name": file_name,
+                "text": text[:10000],
+            })
+
+        elif recommended_action == "ask_name_for_account":
+            set_pending_action(user_id, "ask_name_for_account", {
+                "file_name": file_name,
+                "text": text[:10000],
+            })
+
+        # Xử lý tóm tắt bình thường, không nói hoạch toẹt ra là mình đang săm soi
         remember_summary(user_id, file_name, structured)
         await send_summary_with_interactive_buttons(user_id, file_name, structured, time.time() - start_time)
         increment_usage(user_id)
+
+        # ── AUTO DEADLINE: Trích xuất và lưu deadlines ──
+        deadline_count = save_deadlines_from_summary(user_id, structured, doc_title=file_name)
+        if deadline_count > 0:
+            notice = format_deadline_saved_notice(deadline_count, structured.get("deadlines", []))
+            if notice:
+                await send_text_message(user_id, notice)
     except Exception as exc:
         logger.error("File processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Đã xảy ra lỗi. Vui lòng thử lại!")
@@ -1065,7 +1291,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
 
 
 async def handle_zalo_image(user_id: str, image_url: str):
-    """Xử lý ảnh từ user — tóm tắt + nút trích xuất chữ tùy chọn."""
+    """Xử lý ảnh từ user — smart flow: phát hiện mật khẩu, tóm tắt + nút trích xuất chữ."""
     if not check_rate_limit(user_id):
         await send_text_message(
             user_id,
@@ -1089,27 +1315,99 @@ async def handle_zalo_image(user_id: str, image_url: str):
             with open(image_path, "wb") as image_file:
                 image_file.write(response.content)
 
-        # ── AI Summary (phân loại tài liệu, KHÔNG kèm OCR) ──
+        # ── AI Summary (phân loại tài liệu + phát hiện mật khẩu) ──
         structured = await summarize_image_structured(image_path)
         if structured.get("error"):
             await send_text_message(user_id, str(structured["error"]))
             return
 
+        doc_type = structured.get("document_type", "general")
+        recommended_action = structured.get("recommended_action", "standard_summary")
+        credentials = structured.get("credentials")
+
+        # ═══ NHÁNH Y TẾ: ĐƠN THUỐC — warning y tế ═══
+        if doc_type == "medical" and recommended_action == "medical_warning":
+            remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
+            text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
+            text_msg += "\n\n⚠️ Lưu ý: Đây là giải thích AI, KHÔNG thay thế lời khuyên bác sĩ. Bạn hãy hỏi lại bác sĩ điều trị nếu có thắc mắc nhé!"
+            buttons = build_summary_buttons(structured)
+            if len(buttons) < ZALO_MAX_BUTTONS:
+                buttons.append({
+                    "title": "📋 Trích xuất chữ",
+                    "type": "oa.query.show",
+                    "payload": "TRICH XUAT",
+                })
+            await send_long_text_message(user_id, text_msg, buttons)
+            increment_usage(user_id)
+
+            # ── AUTO DEADLINE từ ảnh y tế ──
+            dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh y tế")
+            if dl_count > 0:
+                notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
+                if notice:
+                    await send_text_message(user_id, notice)
+            return
+
+        # ═══ TÍNH NĂNG ẨN: PHÁT HIỆN MẬT KHẨU HOẶC DANH SÁCH ═══
+        if recommended_action in {"ask_to_save_vault", "ask_name_for_account", "ask_name_for_task"}:
+            
+            # Ghi nhớ action nhưng im lặng
+            if recommended_action == "ask_to_save_vault" and credentials:
+                set_pending_action(user_id, "confirm_save_vault", {
+                    "app_name": credentials.get("app_name", "hệ thống"),
+                    "url": credentials.get("url", ""),
+                    "username": credentials.get("username", ""),
+                    "password": credentials.get("password", ""),
+                })
+            else:
+                ocr_text = await extract_ocr_text(image_path)
+                set_pending_action(user_id, recommended_action, {
+                    "file_name": "ảnh chụp",
+                    "text": ocr_text[:10000],
+                })
+
+            # Tóm tắt trả ra bình thường như không có gì xảy ra
+            remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
+            text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
+            buttons = build_summary_buttons(structured)
+            if len(buttons) < ZALO_MAX_BUTTONS:
+                buttons.append({
+                    "title": "📋 Trích xuất chữ",
+                    "type": "oa.query.show",
+                    "payload": "TRICH XUAT",
+                })
+            await send_long_text_message(user_id, text_msg, buttons)
+            increment_usage(user_id)
+
+            # ── AUTO DEADLINE từ ảnh phát hiện ẩn ──
+            dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh bạn vừa gửi")
+            if dl_count > 0:
+                notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
+                if notice:
+                    await send_text_message(user_id, notice)
+            return
+
+        # ═══ NHÁNH 3: MẶC ĐỊNH — Tóm tắt thông thường ═══
         remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
 
-        # ── Gửi tóm tắt + buttons (bao gồm nút Trích xuất chữ) ──
-        text = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
+        text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
         buttons = build_summary_buttons(structured)
-        # Thêm nút Trích xuất chữ (tùy chọn, tiết kiệm token)
         if len(buttons) < ZALO_MAX_BUTTONS:
             buttons.append({
                 "title": "📋 Trích xuất chữ",
                 "type": "oa.query.show",
                 "payload": "TRICH XUAT",
             })
-        await send_long_text_message(user_id, text, buttons)
+        await send_long_text_message(user_id, text_msg, buttons)
 
         increment_usage(user_id)
+
+        # ── AUTO DEADLINE từ ảnh thường ──
+        dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh bạn vừa gửi")
+        if dl_count > 0:
+            notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
+            if notice:
+                await send_text_message(user_id, notice)
     except Exception as exc:
         logger.error("Image processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Không đọc được ảnh. Chụp rõ hơn và thử lại!")

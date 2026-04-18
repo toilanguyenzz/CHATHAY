@@ -126,6 +126,9 @@ DOC_TYPE_LABELS = {
     "admin": "📋 Giấy tờ hành chính",
     "medical": "🏥 Tài liệu y tế",
     "education": "🎓 Tài liệu giáo dục",
+    "password": "🔐 Thông tin đăng nhập",
+    "task_assignment": "📋 Phân công nhiệm vụ",
+    "bulk_accounts": "🗂️ Danh sách tài khoản",
     "photo": "📷 Ảnh chụp",
     "general": "📝 Tài liệu",
 }
@@ -421,6 +424,29 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
     if doc_type and doc_type in DOC_TYPE_LABELS:
         result["document_type"] = doc_type
 
+    # Giữ lại recommended_action và credentials (Smart Bot)
+    action = str(data.get("recommended_action", "standard_summary")).strip().lower()
+    result["recommended_action"] = action
+
+    credentials = data.get("credentials")
+    if credentials and isinstance(credentials, dict):
+        result["credentials"] = credentials
+
+    # Giữ lại deadlines (Auto-Reminder)
+    deadlines = data.get("deadlines")
+    if deadlines and isinstance(deadlines, list):
+        valid_deadlines = []
+        for dl in deadlines:
+            if isinstance(dl, dict) and dl.get("task") and dl.get("date"):
+                valid_deadlines.append({
+                    "task": _normalize_whitespace(str(dl["task"])),
+                    "date": str(dl["date"]).strip(),
+                    "assignee": _normalize_whitespace(str(dl.get("assignee", ""))),
+                    "note": _normalize_whitespace(str(dl.get("note", ""))),
+                })
+        if valid_deadlines:
+            result["deadlines"] = valid_deadlines
+
     return result
 
 
@@ -429,41 +455,76 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
 # ═══════════════════════════════════════════════════════════════
 
 def _build_text_prompt(text: str, target_points: int) -> str:
-    """Prompt tóm tắt text — dynamic point count."""
+    """Prompt tóm tắt text — phân loại tài liệu + trích xuất deadline."""
     text = _smart_truncate(text)
-    return f"""Tom tat tai lieu thanh JSON:
-{{"document_title":"ten","overview":"1-2 cau","points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
-So luong points phai nam trong khoang {MIN_SUMMARY_POINTS}-{MAX_SUMMARY_POINTS}, muc tieu khoang {target_points} points.
-Huong dan:
-- Tai lieu ngan, don gian, it thong tin: 3-4 points.
-- Tai lieu trung binh: 5-6 points.
-- Tai lieu dai, nhieu muc, nhieu so lieu, nhieu nghia vu/rui ro: 7-8 points.
-- Khong co dinh so y cho du so luong. Chi lay cac y that su quan trong.
-- Gop cac y lap lai vao cung 1 point, bo qua cac y vu vat.
-- Uu tien: buc tranh tong quan, so lieu/moc thoi gian/ten rieng quan trong, rui ro-canh bao, viec can lam.
-- Neu la hop dong/chinh sach/quy dinh/thong bao, neu ro nghia vu, quyen loi, che tai, deadline neu co.
-- overview phai giup nguoi doc nam y nghia lon nhat cua tai lieu chi sau 1-2 cau.
-Chi tra ve JSON hop le. LUON tra loi bang tieng Viet de hieu.
+    return f"""Doc tai lieu va phan tich, tra ve JSON:
+{{"document_title":"ten","overview":"1-2 cau","document_type":"loai","recommended_action":"hanh_dong","credentials":null,"deadlines":[],"points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
 
+HUONG DAN:
+1. document_type — phan loai tai lieu:
+   - "password" = thong tin dang nhap cua 1 nguoi (tai khoan, mat khau)
+   - "bulk_accounts" = danh sach tai khoan/mat khau cua NHIEU nguoi
+   - "task_assignment" = quyet dinh phan cong nhiem vu cho nhieu nguoi
+   - "contract" = hop dong, quy dinh
+   - "medical" = tai lieu y te, don thuoc
+   - "general" = mac dinh
+
+2. recommended_action — de xuat hanh dong:
+   - "ask_to_save_vault" = neu document_type la "password"
+   - "ask_name_for_account" = neu document_type la "bulk_accounts"
+   - "ask_name_for_task" = neu document_type la "task_assignment"
+   - "medical_warning" = neu document_type la "medical"
+   - "standard_summary" = mac dinh
+
+3. deadlines — Trich xuat TAT CA ngay han, deadline, thoi gian quan trong:
+   - Moi deadline la 1 object: {{"task":"mo ta cong viec","date":"YYYY-MM-DD","assignee":"ten nguoi (neu co)","note":"ghi chu them"}}
+   - "date" PHAI theo dinh dang YYYY-MM-DD. Neu chi co thang/nam, dung ngay cuoi thang (VD: 04/2026 -> 2026-04-30)
+   - Neu khong co deadline nao, de deadlines = []
+   - Vi du deadline: ngay ky, ngay hieu luc, han nop, han bao cao, ngay het han, ngay gia han, thoi han thanh toan
+
+4. points — Khoang {MIN_SUMMARY_POINTS}-{MAX_SUMMARY_POINTS} y phu hop theo do phuc tap, muc tieu {target_points}.
+   - Neu la hop dong, rui ro, nghia vu thi gop lai thanh cac diem nhan.
+   - Chi tra ve JSON hop le. LUON tra loi bang tieng Viet de hieu.
+
+NỘI DUNG TÀI LIỆU:
 {text}"""
 
 
 def _build_image_prompt(target_points: int = DEFAULT_IMAGE_TARGET_POINTS) -> str:
-    """Prompt tóm tắt ảnh — phân loại tài liệu, KHÔNG kèm OCR (tiết kiệm token)."""
+    """Prompt tóm tắt ảnh — phân loại tài liệu + phát hiện mật khẩu + deadline."""
     return f"""Doc anh va phan tich, tra ve JSON:
-{{"document_title":"chu de","overview":"1-2 cau tom tat","document_type":"loai","points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
+{{"document_title":"chu de","overview":"1-2 cau tom tat","document_type":"loai","recommended_action":"hanh_dong","credentials":null,"deadlines":[],"points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
 
 HUONG DAN:
 1. document_type — phan loai anh thanh DUNG 1 trong cac loai sau:
+   - "password" = anh chup man hinh co thong tin dang nhap (1 nguoi)
+   - "bulk_accounts" = danh sach tai khoan, mat khau cua NHIEU nguoi
    - "invoice" = hoa don, bien lai, phieu thu/chi
    - "contract" = hop dong, thoa thuan, cam ket, phu luc
    - "admin" = cong van, quyet dinh, thong bao co quan nha nuoc, giay to hanh chinh
    - "medical" = don thuoc, ket qua xet nghiem, giay kham benh
    - "education" = thong bao truong hoc, bang diem, lich hoc
+   - "task_assignment" = quyet dinh phan cong nhiem vu, phan cong cong viec cho nhieu nguoi
    - "photo" = anh chup khong phai tai lieu (phong canh, selfie, do vat)
    - "general" = tai lieu khac khong thuoc cac loai tren
 
-2. points — {MIN_SUMMARY_POINTS} den 6 y, muc tieu {target_points}:
+2. recommended_action — de xuat hanh dong:
+   - "ask_to_save_vault" = neu document_type la "password"
+   - "ask_name_for_account" = neu document_type la "bulk_accounts"
+   - "ask_name_for_task" = neu document_type la "task_assignment"
+   - "medical_warning" = neu document_type la "medical"
+   - "standard_summary" = mac dinh cho tat ca loai khac
+
+3. credentials — NEU document_type la "password", trich xuat thanh object:
+   {{"app_name":"ten he thong","url":"dia chi trang web neu co","username":"tai khoan","password":"mat khau"}}
+   Neu KHONG phai password, de credentials = null.
+
+4. deadlines — Trich xuat TAT CA ngay han, deadline, thoi gian quan trong:
+   - Moi deadline la 1 object: {{"task":"mo ta","date":"YYYY-MM-DD","assignee":"ten nguoi (neu co)","note":"ghi chu"}}
+   - "date" PHAI theo dinh dang YYYY-MM-DD
+   - Neu khong co deadline nao, de deadlines = []
+
+5. points — {MIN_SUMMARY_POINTS} den 6 y, muc tieu {target_points}:
    - Chi lay y nhin thay ro va quan trong nhat
    - Neu la hoa don/hop dong/giay to: trich xuat deadline, so tien, nghia vu
    - Neu la don thuoc: liet ke thuoc, lieu luong, cach uong
