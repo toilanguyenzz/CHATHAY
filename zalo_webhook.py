@@ -141,6 +141,26 @@ async def _refresh_zalo_token() -> bool:
                 ZALO_REFRESH_TOKEN = data.get("refresh_token", ZALO_REFRESH_TOKEN)
                 logger.info("Zalo token auto-refreshed successfully!")
                 save_tokens(ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN)
+                
+                # --- AUTO SYNC TO RAILWAY ---
+                # Khắc phục triệt để lỗi -14014 do chạy 2 nơi (local và Railway) tranh chấp token.
+                # Nếu chạy ở máy tính local mà tự refresh token, gửi ngay token mới lên Railway cho nó khỏi chết.
+                is_railway = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")
+                if not is_railway:
+                    try:
+                        # Dùng client vừa tạo (client từ block with bên trên)
+                        await client.post(
+                            "https://chathay-production.up.railway.app/api/update-tokens",
+                            json={
+                                "secret": ZALO_APP_SECRET,
+                                "access_token": ZALO_OA_ACCESS_TOKEN,
+                                "refresh_token": ZALO_REFRESH_TOKEN
+                            }
+                        )
+                        logger.info("✅ Auto-synced new tokens to Production Railway server!")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-sync tokens to Railway: {e}")
+                        
                 return True
             else:
                 logger.error("Failed to refresh token: %s", data)
