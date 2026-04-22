@@ -113,17 +113,62 @@ user_warnings: dict[str, float] = {}
 COOLDOWN_SECONDS = 15
 
 # ═══════════════════════════════════════════════════════════════
-# TOKEN REFRESH
+# TOKEN REFRESH (v3 — fix triệt để Invalid refresh token)
 # ═══════════════════════════════════════════════════════════════
 
+# Lưu timestamp lần refresh thành công gần nhất để tránh refresh trùng
+_last_successful_refresh_time: float = 0.0
+# Khoảng cách tối thiểu giữa 2 lần refresh (giây) — tránh race condition
+_MIN_REFRESH_INTERVAL = 5.0
+# Proactive refresh interval (giây) — refresh trước khi token hết hạn
+_PROACTIVE_REFRESH_INTERVAL = 30 * 60  # 30 phút
+
+
+async def _sync_tokens_to_railway():
+    """Gửi token mới lên Railway server (nếu đang chạy local)."""
+    is_railway = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")
+    if is_railway:
+        return  # Đang chạy trên Railway rồi, không cần sync
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as sync_client:
+            resp = await sync_client.post(
+                "https://chathay-production.up.railway.app/api/update-tokens",
+                json={
+                    "secret": ZALO_APP_SECRET,
+                    "access_token": ZALO_OA_ACCESS_TOKEN,
+                    "refresh_token": ZALO_REFRESH_TOKEN,
+                },
+            )
+            if resp.status_code == 200:
+                logger.info("✅ Auto-synced new tokens to Railway!")
+            else:
+                logger.warning("Railway sync returned %s: %s", resp.status_code, resp.text[:200])
+    except Exception as e:
+        logger.warning("Failed to auto-sync tokens to Railway: %s", e)
+
+
 async def _refresh_zalo_token() -> bool:
-    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN
+    """Refresh Zalo OAuth token. Thread-safe, chống double-refresh."""
+    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN, _last_successful_refresh_time
+
     async with _token_lock:
+        # ── Guard: nếu vừa refresh xong (< 5s trước), skip ──
+        # Giải quyết race condition: 2 request cùng thấy -216, nhưng
+        # request thứ 2 không nên gọi lại vì request 1 đã refresh rồi.
+        elapsed = time.time() - _last_successful_refresh_time
+        if elapsed < _MIN_REFRESH_INTERVAL:
+            logger.info("Token was just refreshed %.1fs ago — skipping duplicate refresh", elapsed)
+            return True  # Token đã mới rồi, return True để retry với token mới
+
         if not ZALO_REFRESH_TOKEN or not ZALO_APP_ID or not ZALO_APP_SECRET:
             logger.error("Missing refresh_token, app_id, or app_secret to refresh token")
             return False
 
-        logger.info("Attempting to refresh Zalo token...")
+        current_refresh = ZALO_REFRESH_TOKEN  # Snapshot trước khi gọi API
+        logger.info("Attempting to refresh Zalo token (refresh_token ends: ...%s)...",
+                     current_refresh[-8:] if len(current_refresh) > 8 else "***")
+
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 res = await client.post(
@@ -132,42 +177,74 @@ async def _refresh_zalo_token() -> bool:
                     data={
                         "app_id": ZALO_APP_ID,
                         "grant_type": "refresh_token",
-                        "refresh_token": ZALO_REFRESH_TOKEN,
+                        "refresh_token": current_refresh,
                     },
                 )
             data = res.json()
+
             if "access_token" in data:
-                ZALO_OA_ACCESS_TOKEN = data["access_token"]
-                ZALO_REFRESH_TOKEN = data.get("refresh_token", ZALO_REFRESH_TOKEN)
-                logger.info("Zalo token auto-refreshed successfully!")
-                save_tokens(ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN)
-                
-                # --- AUTO SYNC TO RAILWAY ---
-                # Khắc phục triệt để lỗi -14014 do chạy 2 nơi (local và Railway) tranh chấp token.
-                # Nếu chạy ở máy tính local mà tự refresh token, gửi ngay token mới lên Railway cho nó khỏi chết.
-                is_railway = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")
-                if not is_railway:
-                    try:
-                        # Dùng client vừa tạo (client từ block with bên trên)
-                        await client.post(
-                            "https://chathay-production.up.railway.app/api/update-tokens",
-                            json={
-                                "secret": ZALO_APP_SECRET,
-                                "access_token": ZALO_OA_ACCESS_TOKEN,
-                                "refresh_token": ZALO_REFRESH_TOKEN
-                            }
-                        )
-                        logger.info("✅ Auto-synced new tokens to Production Railway server!")
-                    except Exception as e:
-                        logger.warning(f"Failed to auto-sync tokens to Railway: {e}")
-                        
+                new_access = data["access_token"]
+                new_refresh = data.get("refresh_token", current_refresh)
+
+                ZALO_OA_ACCESS_TOKEN = new_access
+                ZALO_REFRESH_TOKEN = new_refresh
+                _last_successful_refresh_time = time.time()
+
+                # Lưu vào DB ngay lập tức
+                save_tokens(new_access, new_refresh)
+                logger.info("✅ Zalo token refreshed! New access ends: ...%s, new refresh ends: ...%s",
+                            new_access[-8:], new_refresh[-8:] if len(new_refresh) > 8 else "***")
+
+                # Sync lên Railway (nếu đang chạy local) — dùng client MỚI
+                await _sync_tokens_to_railway()
                 return True
+
             else:
-                logger.error("Failed to refresh token: %s", data)
+                error_code = data.get("error", "unknown")
+                error_name = data.get("error_name", "")
+                logger.error("❌ Token refresh FAILED (error=%s, name=%s): %s",
+                             error_code, error_name, data)
+
+                # Nếu refresh token bị invalid (14014), log rõ ràng
+                if error_code == -14014 or error_code == 14014 or "Invalid refresh token" in str(data):
+                    logger.critical(
+                        "🚨 REFRESH TOKEN ĐÃ HẾT HẠN! Cần lấy token mới từ Zalo Developer Portal.\n"
+                        "   Bước 1: Vào https://developers.zalo.me → chọn app → lấy token mới\n"
+                        "   Bước 2: Chạy cap_nhat_token_len_server.py hoặc POST /api/update-tokens"
+                    )
                 return False
+
         except Exception as e:
-            logger.error("Error during token refresh: %s", e)
+            logger.error("Error during token refresh: %s", e, exc_info=True)
             return False
+
+
+async def _proactive_token_refresh_loop():
+    """Background loop: tự refresh token mỗi 30 phút TRƯỚC KHI nó hết hạn.
+    
+    Zalo access_token sống ~1 giờ. Nếu chờ đến khi bị -216 mới refresh,
+    user message sẽ bị delay hoặc mất. Proactive refresh = không bao giờ hết hạn.
+    """
+    logger.info("🔄 Proactive token refresh scheduler started (every %d min)",
+                _PROACTIVE_REFRESH_INTERVAL // 60)
+    
+    # Chờ 60s sau khi server start trước khi bắt đầu (tránh refresh ngay lúc cold start)
+    await asyncio.sleep(60)
+    
+    while True:
+        try:
+            logger.info("🔄 Proactive token refresh triggered...")
+            success = await _refresh_zalo_token()
+            if success:
+                logger.info("🔄 Proactive refresh OK — next in %d min", _PROACTIVE_REFRESH_INTERVAL // 60)
+            else:
+                logger.warning("🔄 Proactive refresh FAILED — will retry in 5 min")
+                await asyncio.sleep(5 * 60)  # Retry sớm hơn nếu fail
+                continue
+        except Exception as e:
+            logger.error("Proactive refresh error: %s", e, exc_info=True)
+        
+        await asyncio.sleep(_PROACTIVE_REFRESH_INTERVAL)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -773,24 +850,26 @@ async def handle_ocr_request(user_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("CHAT HAY v2.1 — Zalo OA Webhook Server starting...")
+    logger.info("CHAT HAY v3.0 — Zalo OA Webhook Server starting...")
     logger.info("OA Token set: %s", "YES" if ZALO_OA_ACCESS_TOKEN else "NO")
     logger.info("OA Secret set: %s", "YES" if ZALO_OA_SECRET else "NO")
     logger.info("App ID: %s", ZALO_APP_ID)
-    logger.info("Features: OCR ✓ | Doc Classification ✓ | TTS ✓ | Deadline Reminder ✓")
+    logger.info("Features: OCR ✓ | Doc Classification ✓ | TTS ✓ | Deadline Reminder ✓ | Proactive Token Refresh ✓")
     logger.info("=" * 60)
 
     # Inject message sender vào deadline service (tránh circular import)
     set_message_sender(send_text_message)
 
-    # Khởi động background scheduler nhắc nhở deadline
+    # Khởi động background schedulers
     scheduler_task = asyncio.create_task(start_reminder_scheduler())
+    token_refresh_task = asyncio.create_task(_proactive_token_refresh_loop())
 
     yield
 
     # Cleanup
     stop_reminder_scheduler()
     scheduler_task.cancel()
+    token_refresh_task.cancel()
     logger.info("Server shutting down...")
 
 
@@ -872,8 +951,8 @@ async def debug_tokens():
 
 @app.post("/api/update-tokens")
 async def api_update_tokens(request: Request):
-    """Endpoint cập nhật token từ xa."""
-    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN
+    """Endpoint cập nhật token từ xa (từ local hoặc deploy script)."""
+    global ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN, _last_successful_refresh_time
     try:
         body = await request.json()
         secret = body.get("secret", "")
@@ -887,8 +966,10 @@ async def api_update_tokens(request: Request):
 
         ZALO_OA_ACCESS_TOKEN = new_access
         ZALO_REFRESH_TOKEN = new_refresh
+        _last_successful_refresh_time = time.time()  # Reset timer để tránh proactive refresh trùng
         save_tokens(new_access, new_refresh)
 
+        logger.info("✅ Tokens updated via /api/update-tokens (access ends: ...%s)", new_access[-8:])
         return JSONResponse(content={"status": "ok", "message": "Tokens updated successfully"}, status_code=200)
     except HTTPException:
         raise
