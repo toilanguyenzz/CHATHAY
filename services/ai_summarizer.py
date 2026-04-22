@@ -23,6 +23,7 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 
 from config import config
+from prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ QUOTA_MESSAGE = "Hệ thống AI đang hết quota tạm thời. Bạn vui lòng
 GENERIC_SUMMARY_ERROR = "Xin lỗi, tôi không thể tóm tắt tài liệu này lúc này. Bạn vui lòng thử lại sau."
 GENERIC_IMAGE_ERROR = "Xin lỗi, tôi không thể đọc nội dung trong ảnh lúc này. Bạn vui lòng chụp rõ hơn hoặc thử lại sau."
 MIN_SUMMARY_POINTS = 3
-MAX_SUMMARY_POINTS = 8
+MAX_SUMMARY_POINTS = 15
 DEFAULT_IMAGE_TARGET_POINTS = 4
 
 # Document type labels (Vietnamese)
@@ -156,7 +157,7 @@ def _is_model_not_found(error: Exception) -> bool:
 # LAYER 2: SMART TRUNCATION
 # ═══════════════════════════════════════════════════════════════
 
-def _smart_truncate(text: str, max_total: int = 5000) -> str:
+def _smart_truncate(text: str, max_total: int = 100000) -> str:
     """Cắt thông minh: giữ đầu + giữa + cuối thay vì cắt cứng.
 
     Lý do: Đầu tài liệu chứa tiêu đề + giới thiệu (~40% info).
@@ -335,25 +336,33 @@ def _estimate_target_points(text: str) -> int:
     digit_count = len(re.findall(r"\d", text))
 
     score = 0
-    for threshold in (700, 1600, 3200, 6000, 9000):
+    for threshold in (700, 1600, 3200, 6000, 9000, 15000, 25000, 40000):
         if length >= threshold:
             score += 1
     if paragraph_count >= 6:
         score += 1
     if paragraph_count >= 12:
         score += 1
+    if paragraph_count >= 20:
+        score += 1
     if bullet_count >= 4:
+        score += 1
+    if bullet_count >= 8:
         score += 1
     if heading_count >= 3:
         score += 1
+    if heading_count >= 5:
+        score += 1
     if sentence_count >= 18:
+        score += 1
+    if sentence_count >= 40:
         score += 1
     if digit_count >= 30:
         score += 1
 
     return max(
         MIN_SUMMARY_POINTS,
-        min(MAX_SUMMARY_POINTS, 3 + min(score, MAX_SUMMARY_POINTS - MIN_SUMMARY_POINTS)),
+        min(MAX_SUMMARY_POINTS, 5 + min(score, MAX_SUMMARY_POINTS - MIN_SUMMARY_POINTS)),
     )
 
 
@@ -457,80 +466,109 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
 def _build_text_prompt(text: str, target_points: int) -> str:
     """Prompt tóm tắt text — phân loại tài liệu + trích xuất deadline."""
     text = _smart_truncate(text)
-    return f"""Doc tai lieu va phan tich, tra ve JSON:
-{{"document_title":"ten","overview":"1-2 cau","document_type":"loai","recommended_action":"hanh_dong","credentials":null,"deadlines":[],"points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
+    return f"""Hãy đọc kỹ toàn bộ tài liệu bên dưới và phân tích thật chi tiết. Trả về kết quả dưới dạng JSON với cấu trúc sau:
 
-HUONG DAN:
-1. document_type — phan loai tai lieu:
-   - "password" = thong tin dang nhap cua 1 nguoi (tai khoan, mat khau)
-   - "bulk_accounts" = danh sach tai khoan/mat khau cua NHIEU nguoi
-   - "task_assignment" = quyet dinh phan cong nhiem vu cho nhieu nguoi
-   - "contract" = hop dong, quy dinh
-   - "medical" = tai lieu y te, don thuoc
-   - "general" = mac dinh
+{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan mô tả nội dung chính của tài liệu", "document_type": "loại tài liệu", "recommended_action": "hành động đề xuất", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu giải thích CỰC KỲ CHI TIẾT, dễ hiểu"}}]}}
 
-2. recommended_action — de xuat hanh dong:
-   - "ask_to_save_vault" = neu document_type la "password"
-   - "ask_name_for_account" = neu document_type la "bulk_accounts"
-   - "ask_name_for_task" = neu document_type la "task_assignment"
-   - "medical_warning" = neu document_type la "medical"
-   - "standard_summary" = mac dinh
+HƯỚNG DẪN CHI TIẾT:
 
-3. deadlines — Trich xuat TAT CA ngay han, deadline, thoi gian quan trong:
-   - Moi deadline la 1 object: {{"task":"mo ta cong viec","date":"YYYY-MM-DD","assignee":"ten nguoi (neu co)","note":"ghi chu them"}}
-   - "date" PHAI theo dinh dang YYYY-MM-DD. Neu chi co thang/nam, dung ngay cuoi thang (VD: 04/2026 -> 2026-04-30)
-   - Neu khong co deadline nao, de deadlines = []
-   - Vi du deadline: ngay ky, ngay hieu luc, han nop, han bao cao, ngay het han, ngay gia han, thoi han thanh toan
+📋 PHÂN LOẠI TÀI LIỆU (document_type):
+   - "password" = Thông tin đăng nhập tài khoản của 1 người
+   - "bulk_accounts" = Danh sách tài khoản/mật khẩu của NHIỀU người
+   - "task_assignment" = Quyết định phân công nhiệm vụ cho nhiều người
+   - "contract" = Hợp đồng, quy định, thỏa thuận
+   - "medical" = Tài liệu y tế, đơn thuốc, kết quả xét nghiệm
+   - "general" = Các tài liệu khác (mặc định)
 
-4. points — Khoang {MIN_SUMMARY_POINTS}-{MAX_SUMMARY_POINTS} y phu hop theo do phuc tap, muc tieu {target_points}.
-   - Neu la hop dong, rui ro, nghia vu thi gop lai thanh cac diem nhan.
-   - Chi tra ve JSON hop le. LUON tra loi bang tieng Viet de hieu.
+🎯 HÀNH ĐỘNG ĐỀ XUẤT (recommended_action):
+   - "ask_to_save_vault" nếu là "password"
+   - "ask_name_for_account" nếu là "bulk_accounts"
+   - "ask_name_for_task" nếu là "task_assignment"
+   - "medical_warning" nếu là "medical"
+   - "standard_summary" cho tất cả loại khác
 
-NỘI DUNG TÀI LIỆU:
+📅 DEADLINE (deadlines):
+   - Trích xuất TẤT CẢ ngày hạn, deadline, thời gian quan trọng từ tài liệu
+   - Mỗi deadline: {{"task": "mô tả công việc", "date": "YYYY-MM-DD", "assignee": "tên người (nếu có)", "note": "ghi chú"}}
+   - Ngày tháng PHẢI theo định dạng YYYY-MM-DD. Nếu chỉ có tháng/năm → dùng ngày cuối tháng
+   - Nếu không có deadline nào, để deadlines = []
+   - Ví dụ: ngày ký, ngày hiệu lực, hạn nộp, hạn báo cáo, ngày hết hạn, thời hạn thanh toán
+
+📝 CÁC Ý CHÍNH (points) — Từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS} ý, mục tiêu {target_points} ý:
+
+   ⚠️ YÊU CẦU BẮT BUỘC VỀ VĂN PHONG:
+   - Viết bằng tiếng Việt CÓ DẤU, trong sáng, dễ hiểu.
+   - Viết như đang GIẢI THÍCH CHO NGƯỜI KHÔNG CHUYÊN — tránh thuật ngữ phức tạp.
+   - Nếu buộc phải dùng thuật ngữ → giải thích ngay trong ngoặc bằng từ đơn giản.
+
+   ⚠️ YÊU CẦU BẮT BUỘC VỀ NỘI DUNG:
+   - Mục "detail" PHẢI viết thành 1 ĐOẠN VĂN dài 4-8 câu, giải thích CỰC KỲ CHI TIẾT.
+   - TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, tên tổ chức, địa chỉ.
+   - KHÔNG ĐƯỢC nói chung chung kiểu "có nhiều quy định" hoặc "đề cập đến nhiều vấn đề".
+   - Nếu có thông tin quan trọng (số tiền, hạn chót, cảnh báo) → nêu RÕ RÀNG trong detail.
+   - Ưu tiên: số liệu → ngày tháng → tên riêng → nghĩa vụ → cảnh báo/rủi ro.
+
+   Ví dụ ĐÚNG cho "detail": "Hợp đồng có thời hạn 24 tháng, từ ngày 01/01/2026 đến 31/12/2027. Tổng giá trị hợp đồng là 500 triệu đồng, thanh toán làm 3 đợt: đợt 1 là 200 triệu khi ký, đợt 2 là 200 triệu khi hoàn thành 50%, đợt 3 là 100 triệu khi nghiệm thu. Bên B phải hoàn thành công trình trước ngày 30/06/2027, nếu trễ sẽ bị phạt 0.1% giá trị hợp đồng cho mỗi ngày chậm."
+   Ví dụ SAI: "Hợp đồng có quy định về thời hạn và thanh toán." ← QUÁ CHUNG CHUNG, KHÔNG CHẤP NHẬN.
+
+Chỉ trả về JSON hợp lệ.
+
+═══════════════════════════════════
+NỘI DUNG TÀI LIỆU CẦN PHÂN TÍCH:
+═══════════════════════════════════
 {text}"""
 
 
 def _build_image_prompt(target_points: int = DEFAULT_IMAGE_TARGET_POINTS) -> str:
     """Prompt tóm tắt ảnh — phân loại tài liệu + phát hiện mật khẩu + deadline."""
-    return f"""Doc anh va phan tich, tra ve JSON:
-{{"document_title":"chu de","overview":"1-2 cau tom tat","document_type":"loai","recommended_action":"hanh_dong","credentials":null,"deadlines":[],"points":[{{"title":"y chinh","brief":"1 cau <160 ky tu","detail":"2-5 cau giai thich"}}]}}
+    return f"""Hãy đọc kỹ nội dung trong ảnh này và phân tích thật chi tiết. Trả về kết quả dưới dạng JSON:
 
-HUONG DAN:
-1. document_type — phan loai anh thanh DUNG 1 trong cac loai sau:
-   - "password" = anh chup man hinh co thong tin dang nhap (1 nguoi)
-   - "bulk_accounts" = danh sach tai khoan, mat khau cua NHIEU nguoi
-   - "invoice" = hoa don, bien lai, phieu thu/chi
-   - "contract" = hop dong, thoa thuan, cam ket, phu luc
-   - "admin" = cong van, quyet dinh, thong bao co quan nha nuoc, giay to hanh chinh
-   - "medical" = don thuoc, ket qua xet nghiem, giay kham benh
-   - "education" = thong bao truong hoc, bang diem, lich hoc
-   - "task_assignment" = quyet dinh phan cong nhiem vu, phan cong cong viec cho nhieu nguoi
-   - "photo" = anh chup khong phai tai lieu (phong canh, selfie, do vat)
-   - "general" = tai lieu khac khong thuoc cac loai tren
+{{"document_title": "Chủ đề/tiêu đề của ảnh", "overview": "2-3 câu tóm tắt nội dung chính", "document_type": "loại tài liệu", "recommended_action": "hành động đề xuất", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 3-7 câu giải thích CHI TIẾT"}}]}}
 
-2. recommended_action — de xuat hanh dong:
-   - "ask_to_save_vault" = neu document_type la "password"
-   - "ask_name_for_account" = neu document_type la "bulk_accounts"
-   - "ask_name_for_task" = neu document_type la "task_assignment"
-   - "medical_warning" = neu document_type la "medical"
-   - "standard_summary" = mac dinh cho tat ca loai khac
+HƯỚNG DẪN CHI TIẾT:
 
-3. credentials — NEU document_type la "password", trich xuat thanh object:
-   {{"app_name":"ten he thong","url":"dia chi trang web neu co","username":"tai khoan","password":"mat khau"}}
-   Neu KHONG phai password, de credentials = null.
+📋 PHÂN LOẠI ẢNH (document_type) — chọn ĐÚNG 1 loại:
+   - "password" = Ảnh chụp màn hình có thông tin đăng nhập (1 người)
+   - "bulk_accounts" = Danh sách tài khoản, mật khẩu của NHIỀU người
+   - "invoice" = Hóa đơn, biên lai, phiếu thu/chi
+   - "contract" = Hợp đồng, thỏa thuận, cam kết, phụ lục
+   - "admin" = Công văn, quyết định, thông báo cơ quan nhà nước
+   - "medical" = Đơn thuốc, kết quả xét nghiệm, giấy khám bệnh
+   - "education" = Thông báo trường học, bảng điểm, lịch học
+   - "task_assignment" = Phân công nhiệm vụ, công việc cho nhiều người
+   - "photo" = Ảnh chụp không phải tài liệu (phong cảnh, selfie, đồ vật)
+   - "general" = Tài liệu khác không thuộc các loại trên
 
-4. deadlines — Trich xuat TAT CA ngay han, deadline, thoi gian quan trong:
-   - Moi deadline la 1 object: {{"task":"mo ta","date":"YYYY-MM-DD","assignee":"ten nguoi (neu co)","note":"ghi chu"}}
-   - "date" PHAI theo dinh dang YYYY-MM-DD
-   - Neu khong co deadline nao, de deadlines = []
+🎯 HÀNH ĐỘNG ĐỀ XUẤT (recommended_action):
+   - "ask_to_save_vault" nếu là "password"
+   - "ask_name_for_account" nếu là "bulk_accounts"
+   - "ask_name_for_task" nếu là "task_assignment"
+   - "medical_warning" nếu là "medical"
+   - "standard_summary" cho tất cả loại khác
 
-5. points — {MIN_SUMMARY_POINTS} den 6 y, muc tieu {target_points}:
-   - Chi lay y nhin thay ro va quan trong nhat
-   - Neu la hoa don/hop dong/giay to: trich xuat deadline, so tien, nghia vu
-   - Neu la don thuoc: liet ke thuoc, lieu luong, cach uong
-   - Uu tien so lieu, ngay thang, ten rieng, canh bao, viec can lam
+🔐 THÔNG TIN ĐĂNG NHẬP (credentials):
+   - NẾU document_type là "password", trích xuất: {{"app_name": "tên hệ thống", "url": "địa chỉ trang web", "username": "tài khoản", "password": "mật khẩu"}}
+   - Nếu KHÔNG phải password → để credentials = null
 
-Chi tra ve JSON hop le. LUON tra loi bang tieng Viet de hieu."""
+📅 DEADLINE (deadlines):
+   - Trích xuất TẤT CẢ ngày hạn, deadline, thời gian quan trọng
+   - Mỗi deadline: {{"task": "mô tả", "date": "YYYY-MM-DD", "assignee": "tên người", "note": "ghi chú"}}
+   - Nếu không có deadline nào → để deadlines = []
+
+📝 CÁC Ý CHÍNH (points) — Từ {MIN_SUMMARY_POINTS} đến 6 ý, mục tiêu {target_points} ý:
+
+   ⚠️ YÊU CẦU BẮT BUỘC VỀ VĂN PHONG:
+   - Viết bằng tiếng Việt CÓ DẤU, trong sáng, dễ hiểu như đang giải thích cho người thường.
+   - KHÔNG dùng thuật ngữ chuyên môn mà không giải thích.
+
+   ⚠️ YÊU CẦU BẮT BUỘC VỀ NỘI DUNG:
+   - Mục "detail" PHẢI viết thành đoạn văn 3-7 câu, giải thích CỰC KỲ CHI TIẾT.
+   - TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên riêng nhìn thấy trong ảnh.
+   - Nếu là hóa đơn/hợp đồng: trích xuất rõ số tiền, hạn chót, nghĩa vụ.
+   - Nếu là đơn thuốc: liệt kê TỪNG loại thuốc, liều lượng, cách uống cụ thể.
+   - Ưu tiên: số liệu → ngày tháng → tên riêng → cảnh báo → việc cần làm.
+
+Chỉ trả về JSON hợp lệ."""
 
 
 def _build_ocr_only_prompt() -> str:
@@ -561,7 +599,7 @@ SAFETY_SETTINGS = {
 async def _call_gemini_with_fallback(
     content,
     text_length: int = 0,
-    max_tokens: int = 4096,
+    max_tokens: int = 8192,
     response_json: bool = True,
 ) -> str:
     """Gọi Gemini với fallback: nếu model chính 404 → thử model khác."""
@@ -580,7 +618,7 @@ async def _call_gemini_with_fallback(
             unique_models.append(m)
 
     gen_config_kwargs = {
-        "temperature": 0.2,
+        "temperature": 0.3,
         "max_output_tokens": max_tokens,
     }
     if response_json:
@@ -592,6 +630,7 @@ async def _call_gemini_with_fallback(
             _configure_next_key()
             model = genai.GenerativeModel(
                 model_name=model_name,
+                system_instruction=SYSTEM_PROMPT,
                 generation_config=genai.GenerationConfig(**gen_config_kwargs),
             )
             response = model.generate_content(
@@ -720,6 +759,71 @@ async def extract_ocr_text(image_path: str) -> str:
         if _is_quota_error(exc):
             return "(Hệ thống đang hết quota, thử lại sau 1 phút)"
         return f"(Lỗi khi trích xuất text: {exc})"
+
+
+async def summarize_pdf_images_structured(image_paths: list[str]) -> dict[str, Any]:
+    """Tóm tắt PDF scan/handwritten bằng cách gửi ảnh các trang cho Gemini Vision.
+    
+    Dùng khi extract_text() trả về rỗng (PDF scan, chữ viết tay, PDF chỉ có ảnh).
+    Gửi tối đa 10 trang ảnh cùng lúc để Gemini đọc.
+    """
+    if not image_paths:
+        return {"error": "Không có trang nào để phân tích."}
+
+    target_points = min(len(image_paths) + 3, MAX_SUMMARY_POINTS)
+    
+    prompt = f"""Hãy đọc kỹ TOÀN BỘ các trang tài liệu (dạng ảnh scan/chụp) bên dưới và phân tích thật chi tiết.
+Tài liệu này có {len(image_paths)} trang. Trả về kết quả dưới dạng JSON:
+
+{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan", "document_type": "loại tài liệu", "recommended_action": "standard_summary", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu giải thích CỰC KỲ CHI TIẾT"}}]}}
+
+📋 PHÂN LOẠI TÀI LIỆU (document_type): invoice|contract|admin|medical|education|task_assignment|general
+
+📅 DEADLINE: Trích xuất TẤT CẢ deadline, ngày hạn → {{"task": "mô tả", "date": "YYYY-MM-DD", "assignee": "tên người", "note": "ghi chú"}}
+
+📝 CÁC Ý CHÍNH: Từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS} ý, mục tiêu {target_points} ý.
+
+⚠️ LƯU Ý ĐẶC BIỆT:
+- Đây là tài liệu SCAN hoặc có CHỮ VIẾT TAY — hãy đọc cẩn thận từng trang.
+- Nếu có bảng biểu, trích xuất dữ liệu cụ thể trong bảng.
+- Nếu chữ viết tay không rõ, ghi chú "(chữ viết tay khó đọc)" và đoán nghĩa nếu có thể.
+- Viết bằng tiếng Việt CÓ DẤU, trong sáng, chi tiết.
+- TRÍCH DẪN CỤ THỂ: con số, ngày tháng, tên người, tên tổ chức.
+- "detail" PHẢI 4-8 câu, giải thích CỰC KỲ CHI TIẾT với dữ kiện cụ thể.
+
+Chỉ trả về JSON hợp lệ."""
+
+    last_error_msg = ""
+    for attempt in range(3):
+        try:
+            # Mở tất cả ảnh
+            images = [Image.open(path) for path in image_paths]
+            content = [prompt] + images
+            
+            response_text = await _call_gemini_with_fallback(
+                content,
+                text_length=2000,  # Force standard model for multi-page
+                max_tokens=8192,
+            )
+            parsed = _extract_json(response_text)
+            normalized = _normalize_points(parsed, target_points)
+            logger.info(
+                "PDF scan summary: %s pages, %s chars response, type=%s, attempt=%s",
+                len(image_paths),
+                len(response_text),
+                normalized.get("document_type", "unknown"),
+                attempt + 1,
+            )
+            return normalized
+
+        except Exception as exc:
+            logger.warning("PDF scan summarization attempt %s failed: %s", attempt + 1, exc)
+            if _is_quota_error(exc):
+                return {"error": QUOTA_MESSAGE}
+            last_error_msg = str(exc)
+            await asyncio.sleep(1)
+
+    return {"error": f"Không thể đọc file PDF scan sau 3 lần thử: {last_error_msg}"}
 
 
 def get_doc_type_label(doc_type: str) -> str:

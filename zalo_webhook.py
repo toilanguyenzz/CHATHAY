@@ -28,10 +28,11 @@ from config import config
 from services.ai_summarizer import (
     summarize_image_structured,
     summarize_text_structured,
+    summarize_pdf_images_structured,
     extract_ocr_text,
     get_doc_type_label,
 )
-from services.document_parser import extract_text, get_file_type
+from services.document_parser import extract_text, get_file_type, convert_pdf_to_images
 from services.tts_service import cleanup_audio, text_to_speech
 from services.token_store import load_token, load_tokens, save_tokens, get_token_info
 from services.db_service import (
@@ -1018,9 +1019,23 @@ async def api_summarize(file: UploadFile = File(...)):
                 structured = await summarize_image_structured(file_path)
             else:
                 text, _ft = await extract_text(file_path, config.MAX_PAGES)
-                if not text:
+                if not text and _ft == "pdf":
+                    # OCR fallback for scanned/handwritten PDF
+                    page_images = await convert_pdf_to_images(file_path, max_pages=10)
+                    if not page_images:
+                        return JSONResponse(content={"error": "Không thể đọc file PDF này (scan/ảnh)."}, status_code=400)
+                    try:
+                        structured = await summarize_pdf_images_structured(page_images)
+                    finally:
+                        for img_path in page_images:
+                            try:
+                                os.remove(img_path)
+                            except OSError:
+                                pass
+                elif not text:
                     return JSONResponse(content={"error": "Không đọc được nội dung file này."}, status_code=400)
-                structured = await summarize_text_structured(text)
+                else:
+                    structured = await summarize_text_structured(text)
 
             if structured.get("error"):
                 return JSONResponse(content={"error": str(structured["error"])}, status_code=500)
@@ -1059,9 +1074,22 @@ async def api_summarize_view(file: UploadFile = File(...)):
                 structured = await summarize_image_structured(file_path)
             else:
                 text, _ft = await extract_text(file_path, config.MAX_PAGES)
-                if not text:
+                if not text and _ft == "pdf":
+                    page_images = await convert_pdf_to_images(file_path, max_pages=10)
+                    if not page_images:
+                        return HTMLResponse(content="<h1>Không thể đọc file PDF này (scan/ảnh).</h1>", status_code=400)
+                    try:
+                        structured = await summarize_pdf_images_structured(page_images)
+                    finally:
+                        for img_path in page_images:
+                            try:
+                                os.remove(img_path)
+                            except OSError:
+                                pass
+                elif not text:
                     return HTMLResponse(content="<h1>Không đọc được nội dung file này.</h1>", status_code=400)
-                structured = await summarize_text_structured(text)
+                else:
+                    structured = await summarize_text_structured(text)
 
             if structured.get("error"):
                 return HTMLResponse(content=f"<h1>{structured['error']}</h1>", status_code=500)
@@ -1392,7 +1420,48 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             return
 
         text, _file_type = await extract_text(file_path, config.MAX_PAGES)
-        if not text:
+        if not text and _file_type == "pdf":
+            # ── FALLBACK: PDF scan/handwritten → convert to images → Gemini Vision ──
+            logger.info("PDF text extraction empty — trying OCR fallback via Gemini Vision")
+            await send_text_message(
+                user_id,
+                "📷 File PDF này là dạng scan/ảnh chụp. Đang dùng AI Vision để đọc..."
+            )
+            page_images = await convert_pdf_to_images(file_path, max_pages=10)
+            if not page_images:
+                await send_text_message(
+                    user_id,
+                    "Không thể đọc file PDF này. File có thể bị lỗi hoặc được bảo vệ bằng mật khẩu."
+                )
+                return
+
+            try:
+                structured = await summarize_pdf_images_structured(page_images)
+                if structured.get("error"):
+                    await send_text_message(user_id, str(structured["error"]))
+                    return
+
+                remember_summary(user_id, file_name, structured)
+                await send_summary_with_interactive_buttons(
+                    user_id, file_name, structured, time.time() - start_time
+                )
+                increment_usage(user_id)
+
+                # Auto deadline extraction
+                deadline_count = save_deadlines_from_summary(user_id, structured, doc_title=file_name)
+                if deadline_count > 0:
+                    await send_text_message(user_id, format_deadline_saved_notice(deadline_count))
+                update_user_interaction(user_id)
+                return
+            finally:
+                # Cleanup temporary page images
+                for img_path in page_images:
+                    try:
+                        os.remove(img_path)
+                    except OSError:
+                        pass
+
+        elif not text:
             await send_text_message(
                 user_id,
                 "Không đọc được nội dung file này. Thử chụp ảnh tài liệu và gửi ảnh cho mình!"

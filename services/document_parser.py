@@ -8,7 +8,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-async def parse_pdf(file_path: str, max_pages: int = 20) -> str:
+async def parse_pdf(file_path: str, max_pages: int = 100) -> str:
     """Extract text from PDF using pdfplumber (fallback to PyMuPDF)."""
     text_parts = []
 
@@ -88,6 +88,49 @@ async def parse_docx(file_path: str) -> str:
         return ""
 
 
+async def convert_pdf_to_images(file_path: str, max_pages: int = 10, dpi: int = 200) -> list[str]:
+    """Convert PDF pages to PNG images for OCR fallback.
+    
+    Used when pdfplumber/PyMuPDF can't extract text (scanned/handwritten PDFs).
+    Returns list of image file paths. Caller is responsible for cleanup.
+    """
+    image_paths = []
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        pages_to_render = min(total_pages, max_pages)
+        zoom = dpi / 72  # 72 is default PDF DPI
+        matrix = fitz.Matrix(zoom, zoom)
+
+        base_dir = os.path.dirname(file_path)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+
+        for i in range(pages_to_render):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=matrix)
+            img_path = os.path.join(base_dir, f"{base_name}_page_{i+1}.png")
+            pix.save(img_path)
+            image_paths.append(img_path)
+            logger.info(f"PDF page {i+1}/{pages_to_render} rendered to image: {pix.width}x{pix.height}")
+
+        doc.close()
+        logger.info(f"PDF converted to {len(image_paths)} images for OCR fallback")
+
+    except Exception as e:
+        logger.error(f"PDF to image conversion failed: {e}")
+        # Cleanup any partially created files
+        for path in image_paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        image_paths = []
+
+    return image_paths
+
+
 async def parse_image_ocr(file_path: str) -> Optional[str]:
     """
     Extract text from image using Gemini's vision capability.
@@ -119,7 +162,7 @@ def get_file_type(file_path: str) -> str:
     return type_map.get(ext, "unknown")
 
 
-async def extract_text(file_path: str, max_pages: int = 20) -> tuple[str, str]:
+async def extract_text(file_path: str, max_pages: int = 100) -> tuple[str, str]:
     """
     Extract text from a document file.
     
