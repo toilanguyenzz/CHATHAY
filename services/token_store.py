@@ -1,10 +1,11 @@
-"""Token Store — SQLite-based persistent storage for Zalo OAuth tokens.
+"""Token Store v4.0 — Supabase (cloud) + SQLite (fallback).
 
-v3.0 — Fix triệt để lỗi "Invalid refresh token" sau redeploy:
-  - Retry đọc DB nếu Volume chưa mount kịp
-  - LUÔN ưu tiên DB (token mới nhất) > env vars (token cũ từ Dashboard)
-  - Log rõ nguồn gốc token để debug
-  - So sánh updated_at để biết token nào mới hơn
+FIX VĨNH VIỄN lỗi "Invalid refresh token" sau redeploy:
+  - Ưu tiên 1: SUPABASE (cloud DB, luôn online, không phụ thuộc Railway Volume)
+  - Ưu tiên 2: SQLite trên Railway Volume (fallback nếu Supabase down)
+  - Ưu tiên 3: Environment variables (token cũ từ Dashboard)
+  
+  Token được lưu trên cloud → deploy/restart bao nhiêu lần cũng không mất.
 """
 
 import logging
@@ -15,7 +16,86 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Thư mục data — trên Railway nên mount Volume vào /data
+# ═══════════════════════════════════════════════════════════════
+# SUPABASE CLIENT (PRIMARY)
+# ═══════════════════════════════════════════════════════════════
+
+_supabase = None
+
+try:
+    from config import config
+    if config.SUPABASE_URL and config.SUPABASE_KEY:
+        from supabase import create_client
+        _supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        logger.info("✅ Token store: Supabase connected (cloud mode)")
+    else:
+        logger.warning("⚠️ Token store: No Supabase credentials, using SQLite only")
+except Exception as e:
+    logger.warning("⚠️ Token store: Supabase init failed (%s), using SQLite fallback", e)
+
+
+# ═══════════════════════════════════════════════════════════════
+# SUPABASE METHODS
+# ═══════════════════════════════════════════════════════════════
+
+def _supabase_save(key: str, value: str) -> bool:
+    """Lưu token vào Supabase cloud."""
+    if not _supabase:
+        return False
+    try:
+        _supabase.table("zalo_tokens").upsert({
+            "key": key,
+            "value": value,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }).execute()
+        logger.info("☁️ Token saved to Supabase: %s (len=%s)", key, len(value))
+        return True
+    except Exception as e:
+        logger.error("Supabase save failed for %s: %s", key, e)
+        return False
+
+
+def _supabase_load(key: str) -> str | None:
+    """Đọc token từ Supabase cloud."""
+    if not _supabase:
+        return None
+    try:
+        response = _supabase.table("zalo_tokens").select("value, updated_at").eq("key", key).execute()
+        if response.data and response.data[0].get("value"):
+            value = response.data[0]["value"]
+            updated = response.data[0].get("updated_at", "?")
+            logger.info("☁️ Token loaded from Supabase: %s (len=%s, updated=%s)", key, len(value), updated)
+            return value
+        return None
+    except Exception as e:
+        logger.warning("Supabase load failed for %s: %s", key, e)
+        return None
+
+
+def _supabase_get_all() -> list[dict]:
+    """Lấy tất cả tokens từ Supabase (cho debug)."""
+    if not _supabase:
+        return []
+    try:
+        response = _supabase.table("zalo_tokens").select("key, updated_at").execute()
+        return [
+            {
+                "key": row["key"],
+                "value_length": "stored",
+                "updated_at": row.get("updated_at", "?"),
+                "source": "supabase",
+            }
+            for row in response.data
+        ]
+    except Exception as e:
+        logger.warning("Supabase get_all failed: %s", e)
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# SQLITE FALLBACK (SECONDARY)
+# ═══════════════════════════════════════════════════════════════
+
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 DB_PATH = os.path.join(DATA_DIR, "tokens.db")
 
@@ -33,7 +113,6 @@ def _ensure_db():
     """)
     conn.commit()
     conn.close()
-    logger.info("Token store initialized at: %s", DB_PATH)
 
 
 def _init_db_with_retry(max_retries: int = 3, delay: float = 2.0):
@@ -41,21 +120,23 @@ def _init_db_with_retry(max_retries: int = 3, delay: float = 2.0):
     for attempt in range(max_retries):
         try:
             _ensure_db()
+            logger.info("SQLite token store ready at: %s", DB_PATH)
             return True
         except Exception as e:
             logger.warning("DB init attempt %d/%d failed: %s", attempt + 1, max_retries, e)
             if attempt < max_retries - 1:
                 time.sleep(delay)
-    logger.error("Could not initialize token store DB after %d attempts!", max_retries)
+    logger.error("Could not initialize SQLite token store after %d attempts!", max_retries)
     return False
 
 
-# Khởi tạo DB ngay khi import (với retry)
 _db_ready = _init_db_with_retry()
 
 
-def save_token(key: str, value: str) -> bool:
-    """Lưu một token vào DB."""
+def _sqlite_save(key: str, value: str) -> bool:
+    """Lưu token vào SQLite local."""
+    if not _db_ready:
+        return False
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.execute("""
@@ -64,30 +145,74 @@ def save_token(key: str, value: str) -> bool:
         """, (key, value, time.time()))
         conn.commit()
         conn.close()
-        logger.info("Token saved: %s (len=%s)", key, len(value))
         return True
     except Exception as e:
-        logger.error("Failed to save token %s: %s", key, e)
+        logger.error("SQLite save failed for %s: %s", key, e)
         return False
 
 
-def load_token(key: str, fallback: str = "") -> str:
-    """Đọc token từ DB. Nếu DB có giá trị → dùng DB. Nếu không → dùng fallback (env var)."""
+def _sqlite_load(key: str) -> str | None:
+    """Đọc token từ SQLite local."""
+    if not _db_ready:
+        return None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.execute("SELECT value, updated_at FROM kv_store WHERE key = ?", (key,))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
-            db_value = row[0]
-            updated = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[1]))
-            logger.info("Token loaded from DB: %s (len=%s, updated=%s)", key, len(db_value), updated)
-            return db_value
-        else:
-            logger.info("Token NOT found in DB for key=%s, using fallback (len=%s)", key, len(fallback))
+            return row[0]
+        return None
     except Exception as e:
-        logger.warning("Failed to load token %s from DB: %s — using fallback", key, e)
+        logger.warning("SQLite load failed for %s: %s", key, e)
+        return None
 
+
+# ═══════════════════════════════════════════════════════════════
+# PUBLIC API — Dual-write, prioritized read
+# ═══════════════════════════════════════════════════════════════
+
+def save_token(key: str, value: str) -> bool:
+    """Lưu token vào CẢ HAI nơi: Supabase (cloud) + SQLite (local).
+    
+    Dual-write đảm bảo token luôn có ít nhất 1 bản sao an toàn.
+    """
+    ok_cloud = _supabase_save(key, value)
+    ok_local = _sqlite_save(key, value)
+    
+    if ok_cloud:
+        logger.info("Token saved: %s → ☁️ Supabase ✅ + 💾 SQLite %s",
+                     key, "✅" if ok_local else "❌")
+    elif ok_local:
+        logger.warning("Token saved: %s → ☁️ Supabase ❌ + 💾 SQLite ✅ (cloud failed!)", key)
+    else:
+        logger.error("❌ Token save COMPLETELY FAILED for %s!", key)
+    
+    return ok_cloud or ok_local
+
+
+def load_token(key: str, fallback: str = "") -> str:
+    """Đọc token theo thứ tự ưu tiên: Supabase → SQLite → env var.
+    
+    Supabase luôn có token mới nhất vì nó là cloud DB, không bị ảnh hưởng
+    bởi Railway restart/deploy.
+    """
+    # 1. Supabase (cloud, luôn đáng tin nhất)
+    value = _supabase_load(key)
+    if value:
+        return value
+    
+    # 2. SQLite (local, có thể bị stale sau deploy)
+    value = _sqlite_load(key)
+    if value:
+        logger.info("Token loaded from SQLite fallback: %s (len=%s)", key, len(value))
+        # Sync ngược lên Supabase nếu cloud đang trống
+        _supabase_save(key, value)
+        return value
+    
+    # 3. Environment variable (token cũ nhất, chỉ dùng lần đầu)
+    if fallback:
+        logger.info("Token loaded from env fallback: %s (len=%s)", key, len(fallback))
     return fallback
 
 
@@ -99,43 +224,48 @@ def save_tokens(access_token: str, refresh_token: str) -> bool:
 
 
 def load_tokens(env_access: str = "", env_refresh: str = "") -> tuple[str, str]:
-    """Load cả cặp token. 
+    """Load cả cặp token.
     
-    Logic ưu tiên: DB > env vars.
-    Chỉ dùng env vars nếu DB TRỐNG (lần deploy đầu tiên).
-    Nếu DB có token → LUÔN dùng DB, bất kể env vars là gì.
+    Thứ tự ưu tiên: Supabase (cloud) > SQLite (local) > env vars.
     """
     access = load_token("zalo_access_token", env_access)
     refresh = load_token("zalo_refresh_token", env_refresh)
 
-    # Log rõ nguồn gốc để debug
-    access_source = "DB" if access != env_access else ("ENV" if access else "EMPTY")
-    refresh_source = "DB" if refresh != env_refresh else ("ENV" if refresh else "EMPTY")
-    logger.info("Token sources — Access: %s (ends: ...%s), Refresh: %s (ends: ...%s)",
-                access_source, access[-8:] if len(access) > 8 else "***",
-                refresh_source, refresh[-8:] if len(refresh) > 8 else "***")
+    logger.info("Tokens loaded — Access: %s chars (ends: ...%s), Refresh: %s chars (ends: ...%s)",
+                len(access), access[-8:] if len(access) > 8 else "***",
+                len(refresh), refresh[-8:] if len(refresh) > 8 else "***")
 
     return access, refresh
 
 
 def get_token_info() -> dict[str, Any]:
     """Xem trạng thái token hiện tại (cho debug endpoint)."""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        cursor = conn.execute("SELECT key, length(value), updated_at FROM kv_store")
-        rows = cursor.fetchall()
-        conn.close()
-        return {
-            "db_path": DB_PATH,
-            "db_ready": _db_ready,
-            "tokens": [
-                {
+    info: dict[str, Any] = {
+        "supabase_connected": _supabase is not None,
+        "sqlite_ready": _db_ready,
+        "sqlite_path": DB_PATH,
+        "tokens": [],
+    }
+    
+    # Supabase tokens
+    cloud_tokens = _supabase_get_all()
+    info["tokens"].extend(cloud_tokens)
+    
+    # SQLite tokens (nếu không có Supabase)
+    if not cloud_tokens and _db_ready:
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            cursor = conn.execute("SELECT key, length(value), updated_at FROM kv_store")
+            rows = cursor.fetchall()
+            conn.close()
+            for row in rows:
+                info["tokens"].append({
                     "key": row[0],
                     "value_length": row[1],
-                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[2]))
-                }
-                for row in rows
-            ]
-        }
-    except Exception as e:
-        return {"error": str(e), "db_ready": _db_ready}
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[2])),
+                    "source": "sqlite",
+                })
+        except Exception as e:
+            info["sqlite_error"] = str(e)
+    
+    return info
