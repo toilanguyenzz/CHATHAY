@@ -33,7 +33,7 @@ from services.ai_summarizer import (
 )
 from services.document_parser import extract_text, get_file_type
 from services.tts_service import cleanup_audio, text_to_speech
-from services.token_store import load_tokens, save_tokens, get_token_info
+from services.token_store import load_token, load_tokens, save_tokens, get_token_info
 from services.db_service import (
     save_vault_credential,
     get_vault_credential,
@@ -73,20 +73,26 @@ ZALO_SHOW_MORE_PAYLOAD = "XEM THEM"
 ZALO_BACK_TO_SUMMARY_PAYLOAD = "XEM TOM TAT"
 
 # ═══════════════════════════════════════════════════════════════
-# TOKEN MANAGEMENT
+# TOKEN MANAGEMENT (v3 — fix triệt để token bị ghi đè sau redeploy)
 # ═══════════════════════════════════════════════════════════════
 
-# Load tokens: ưu tiên DB (đã refresh) > biến môi trường (lần đầu)
+# Load tokens: ưu tiên DB > env vars (Railway Dashboard)
+# DB = token mới nhất (từ auto-refresh hoặc /api/update-tokens)
+# ENV = token cũ set trong Railway Dashboard (có thể đã hết hạn từ lâu)
 _env_access = os.getenv("ZALO_OA_ACCESS_TOKEN", "")
 _env_refresh = os.getenv("ZALO_REFRESH_TOKEN", "")
 ZALO_OA_ACCESS_TOKEN, ZALO_REFRESH_TOKEN = load_tokens(_env_access, _env_refresh)
 
-# Nếu env có token mới hơn (lần deploy đầu tiên), lưu vào DB
-if _env_access and ZALO_OA_ACCESS_TOKEN == _env_access:
+# CHỈ lưu env vào DB khi DB TRỐNG (tức lần deploy đầu tiên duy nhất)
+# KHÔNG BAO GIỜ ghi đè DB bằng env vars — vì env vars luôn cũ hơn DB
+_db_has_access = load_token("zalo_access_token") != ""
+if not _db_has_access and _env_access:
+    logger.info("🆕 First deploy detected — seeding DB with env vars")
     save_tokens(_env_access, _env_refresh)
 
-logger.info("Loaded tokens — Access: %s chars, Refresh: %s chars",
-            len(ZALO_OA_ACCESS_TOKEN), len(ZALO_REFRESH_TOKEN))
+logger.info("Loaded tokens — Access: %s chars (ends: ...%s), Refresh: %s chars (ends: ...%s)",
+            len(ZALO_OA_ACCESS_TOKEN), ZALO_OA_ACCESS_TOKEN[-8:] if len(ZALO_OA_ACCESS_TOKEN) > 8 else "***",
+            len(ZALO_REFRESH_TOKEN), ZALO_REFRESH_TOKEN[-8:] if len(ZALO_REFRESH_TOKEN) > 8 else "***")
 
 ZALO_OA_SECRET = os.getenv("ZALO_OA_SECRET", "")
 ZALO_APP_SECRET = os.getenv("ZALO_APP_SECRET", ZALO_OA_SECRET)
@@ -943,9 +949,15 @@ async def debug_tokens():
     """Endpoint debug: xem trạng thái token hiện tại."""
     info = get_token_info()
     info["memory_access_token_len"] = len(ZALO_OA_ACCESS_TOKEN)
+    info["memory_access_token_tail"] = ZALO_OA_ACCESS_TOKEN[-8:] if len(ZALO_OA_ACCESS_TOKEN) > 8 else "***"
     info["memory_refresh_token_len"] = len(ZALO_REFRESH_TOKEN)
-    info["version"] = "2.0"
-    info["features"] = ["ocr", "doc_classification", "tts"]
+    info["memory_refresh_token_tail"] = ZALO_REFRESH_TOKEN[-8:] if len(ZALO_REFRESH_TOKEN) > 8 else "***"
+    # So sánh env vs memory để biết token đang dùng từ nguồn nào
+    env_refresh = os.getenv("ZALO_REFRESH_TOKEN", "")
+    info["env_refresh_token_tail"] = env_refresh[-8:] if len(env_refresh) > 8 else "***"
+    info["token_source"] = "DB" if ZALO_REFRESH_TOKEN != env_refresh else "ENV"
+    info["version"] = "3.0"
+    info["features"] = ["ocr", "doc_classification", "tts", "proactive_refresh"]
     return JSONResponse(content=info, status_code=200)
 
 
