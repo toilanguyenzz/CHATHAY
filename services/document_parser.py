@@ -84,7 +84,64 @@ async def parse_docx(file_path: str) -> str:
         return result
 
     except Exception as e:
-        logger.error(f"DOCX parsing failed: {e}")
+        logger.warning(f"python-docx failed: {e} — trying raw XML fallback...")
+
+    # ── FALLBACK: Read DOCX as ZIP → extract raw XML text ──
+    # Handles non-standard DOCX from Google Docs, WPS Office, etc.
+    try:
+        import zipfile
+        import re
+
+        with zipfile.ZipFile(file_path, 'r') as z:
+            # Try standard path first, then scan for document XML
+            xml_content = None
+            doc_paths = ['word/document.xml', 'word/document2.xml']
+
+            for dp in doc_paths:
+                if dp in z.namelist():
+                    xml_content = z.read(dp).decode('utf-8', errors='ignore')
+                    break
+
+            # If standard paths don't work, find any XML with body content
+            if not xml_content:
+                for name in z.namelist():
+                    if name.endswith('.xml') and 'document' in name.lower():
+                        xml_content = z.read(name).decode('utf-8', errors='ignore')
+                        break
+
+            if not xml_content:
+                logger.error("DOCX fallback: no document XML found in ZIP")
+                return ""
+
+            # Strip XML tags, keep text content
+            # Match <w:t ...>text</w:t> tags (Word text runs)
+            text_runs = re.findall(r'<w:t[^>]*>([^<]+)</w:t>', xml_content)
+            if not text_runs:
+                # Broader fallback: strip all XML tags
+                raw_text = re.sub(r'<[^>]+>', ' ', xml_content)
+                raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+                if len(raw_text) > 50:
+                    logger.info(f"DOCX fallback (broad strip): {len(raw_text)} chars")
+                    return raw_text
+                return ""
+
+            # Join text runs, use paragraph breaks where appropriate
+            # <w:p> tags indicate paragraph boundaries
+            paragraphs = re.split(r'<w:p[ >]', xml_content)
+            text_parts = []
+            for para in paragraphs:
+                runs = re.findall(r'<w:t[^>]*>([^<]+)</w:t>', para)
+                if runs:
+                    para_text = ''.join(runs).strip()
+                    if para_text:
+                        text_parts.append(para_text)
+
+            result = "\n".join(text_parts)
+            logger.info(f"DOCX fallback (XML): {len(text_parts)} paragraphs, {len(result)} chars")
+            return result
+
+    except Exception as fallback_err:
+        logger.error(f"DOCX fallback also failed: {fallback_err}")
         return ""
 
 
