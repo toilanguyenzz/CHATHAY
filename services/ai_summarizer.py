@@ -479,6 +479,11 @@ def _build_text_prompt(text: str, target_points: int) -> str:
 
 {{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan ngắn gọn", "document_type": "general", "points": [{{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu cực kỳ chi tiết"}}], "action_items": ["Việc cần làm 1", "Việc cần làm 2"], "suggested_questions": ["Câu hỏi gợi ý 1?", "Câu hỏi gợi ý 2?"]}}
 
+⚠️ NGÔN NGỮ BẮT BUỘC: TOÀN BỘ output phải bằng TIẾNG VIỆT CÓ DẤU.
+- TUYỆT ĐỐI KHÔNG dùng tiếng Trung Quốc (中文), tiếng Nhật, tiếng Hàn trong output.
+- Nếu tài liệu gốc có tiếng Trung/tiếng nước ngoài → DỊCH SANG TIẾNG VIỆT.
+- Ví dụ: 放弃 → "từ bỏ", 执行 → "thực hiện". KHÔNG giữ nguyên ký tự Trung Quốc.
+
 QUY TẮC VIẾT:
 1. Tiếng Việt CÓ DẤU, dễ hiểu, đi thẳng vào trọng tâm.
 2. TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, tên tổ chức.
@@ -537,6 +542,20 @@ Quy tac:
 - Neu anh khong co text nao, tra ve: "(Ảnh không có văn bản)"
 """
 
+def _contains_chinese(text: str) -> bool:
+    """Detect if text contains significant Chinese characters (not Vietnamese).
+    
+    Vietnamese uses Latin script with diacritics, NOT CJK characters.
+    If we see CJK chars, the model is outputting Chinese instead of Vietnamese.
+    """
+    if not text:
+        return False
+    # Count CJK Unified Ideographs (Chinese/Japanese/Korean characters)
+    cjk_count = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff' or '\u3400' <= ch <= '\u4dbf')
+    # Allow a tiny amount (might be in original doc quotes), flag if > 10 chars
+    return cjk_count > 10
+
+
 async def _call_deepseek(
     prompt: str,
     system_prompt: str = SYSTEM_PROMPT,
@@ -544,6 +563,17 @@ async def _call_deepseek(
     response_json: bool = True,
 ) -> str:
     """Gọi DeepSeek V4 Flash API (OpenAI-compatible format)."""
+    
+    # Enforce Vietnamese output for DeepSeek (Chinese model tends to output Chinese)
+    vn_enforcement = (
+        "\n\n⚠️ CRITICAL LANGUAGE RULE: You MUST respond ENTIRELY in Vietnamese (tiếng Việt có dấu). "
+        "DO NOT use Chinese (中文) characters anywhere in your response. "
+        "DO NOT translate meanings into Chinese. "
+        "If the source document contains Chinese text, translate it to Vietnamese. "
+        "Every single word in your output must be Vietnamese or English (for proper nouns). "
+        "违反此规则将导致严重错误。请只用越南语回答。"
+    )
+    enforced_system_prompt = system_prompt + vn_enforcement
     
     headers = {
         "Authorization": f"Bearer {config.DEEPSEEK_API_KEY}",
@@ -553,7 +583,7 @@ async def _call_deepseek(
     body = {
         "model": config.DEEPSEEK_MODEL,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": enforced_system_prompt},
             {"role": "user", "content": prompt},
         ],
         "max_tokens": max_tokens,
@@ -571,7 +601,14 @@ async def _call_deepseek(
         )
         response.raise_for_status()
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+        result = data["choices"][0]["message"]["content"]
+        
+        # Post-processing: Detect Chinese output → reject and fallback to Gemini
+        if _contains_chinese(result):
+            logger.warning("DeepSeek returned Chinese text! Rejecting and falling back to Gemini.")
+            raise ValueError("DeepSeek output contains Chinese characters — falling back to Gemini")
+        
+        return result
 
 
 async def _call_with_smart_routing(
