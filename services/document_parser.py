@@ -268,7 +268,7 @@ def get_file_type(file_path: str) -> str:
 
     type_map = {
         ".pdf": "pdf",
-        ".doc": "docx",
+        ".doc": "doc_legacy",
         ".docx": "docx",
         ".xlsx": "xlsx",
         ".xls": "xls_legacy",
@@ -282,6 +282,119 @@ def get_file_type(file_path: str) -> str:
     }
 
     return type_map.get(ext, "unknown")
+
+
+async def parse_doc_legacy(file_path: str) -> str:
+    """Extract text from legacy .doc (Word 97-2003) binary format."""
+
+    # Method 1: Try olefile (OLE2 compound file reader)
+    try:
+        import olefile
+        import re
+
+        ole = olefile.OleFileIO(file_path)
+        # The main text stream in .doc files
+        if ole.exists('WordDocument'):
+            # Try to read the text from the Word Document stream
+            # .doc stores text in the 'WordDocument' stream in binary format
+            # But readable text is often in '1Table' or '0Table' streams
+            text_parts = []
+
+            # Try reading all streams and extract readable text
+            for stream_path in ole.listdir():
+                stream_name = '/'.join(stream_path)
+                try:
+                    data = ole.openstream(stream_path).read()
+                    # Try UTF-16LE decoding (Word .doc uses UTF-16LE for Unicode text)
+                    try:
+                        decoded = data.decode('utf-16-le', errors='ignore')
+                        # Filter only printable text chunks
+                        chunks = re.findall(r'[\w\s.,;:!?()\[\]{}\-–—"\'/+=%@#$&*~`^\\|<>àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]{3,}', decoded)
+                        for chunk in chunks:
+                            clean = chunk.strip()
+                            if len(clean) > 5 and not clean.startswith('\x00'):
+                                text_parts.append(clean)
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+
+            ole.close()
+
+            if text_parts:
+                # Deduplicate while preserving order
+                seen = set()
+                unique_parts = []
+                for part in text_parts:
+                    if part not in seen:
+                        seen.add(part)
+                        unique_parts.append(part)
+
+                result = '\n'.join(unique_parts)
+                if len(result) > 50:
+                    logger.info(f"DOC legacy parsed (olefile): {len(unique_parts)} chunks, {len(result)} chars")
+                    return result
+
+        ole.close()
+    except ImportError:
+        logger.warning("olefile not installed, skipping OLE method")
+    except Exception as e:
+        logger.warning(f"olefile method failed: {e}")
+
+    # Method 2: Raw binary text extraction (brute force but effective)
+    try:
+        import re
+
+        with open(file_path, 'rb') as f:
+            raw_data = f.read()
+
+        text_parts = []
+
+        # Try UTF-16LE (common in .doc)
+        try:
+            decoded_utf16 = raw_data.decode('utf-16-le', errors='ignore')
+            # Extract meaningful text runs (at least 4 chars, Vietnamese-aware)
+            runs = re.findall(
+                r'[A-Za-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ][A-Za-z0-9 .,;:!?()\-–\"\'/àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]{4,}',
+                decoded_utf16
+            )
+            text_parts.extend(runs)
+        except Exception:
+            pass
+
+        # Try Latin-1 / CP1252 fallback (older .doc files)
+        if not text_parts:
+            try:
+                decoded_latin = raw_data.decode('cp1252', errors='ignore')
+                runs = re.findall(r'[\x20-\x7E\xC0-\xFF]{5,}', decoded_latin)
+                text_parts.extend(runs)
+            except Exception:
+                pass
+
+        if text_parts:
+            # Filter noise: remove very short or binary-looking strings
+            clean_parts = []
+            for part in text_parts:
+                stripped = part.strip()
+                # Skip if mostly control chars or too short
+                if len(stripped) < 5:
+                    continue
+                # Skip if more than 30% non-letter chars (likely binary noise)
+                letter_count = sum(1 for c in stripped if c.isalpha() or c.isspace())
+                if letter_count / len(stripped) < 0.5:
+                    continue
+                clean_parts.append(stripped)
+
+            if clean_parts:
+                result = '\n'.join(clean_parts)
+                logger.info(f"DOC legacy parsed (binary): {len(clean_parts)} text runs, {len(result)} chars")
+                return result
+
+    except Exception as e:
+        logger.error(f"DOC legacy binary extraction failed: {e}")
+
+    logger.error(f"DOC legacy: all methods failed for {file_path}")
+    return ""
 
 
 async def extract_text(file_path: str, max_pages: int = 100) -> tuple[str, str]:
@@ -300,6 +413,10 @@ async def extract_text(file_path: str, max_pages: int = 100) -> tuple[str, str]:
 
     elif file_type == "docx":
         text = await parse_docx(file_path)
+        return text, file_type
+
+    elif file_type == "doc_legacy":
+        text = await parse_doc_legacy(file_path)
         return text, file_type
 
     elif file_type == "xlsx":

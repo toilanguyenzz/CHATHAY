@@ -1962,10 +1962,20 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
                         pass
 
         elif not text:
-            await send_text_message(
-                user_id,
-                "Không đọc được nội dung file này. Thử chụp ảnh tài liệu và gửi ảnh cho mình!"
-            )
+            # Give more specific guidance for .doc legacy files
+            if _file_type == "doc_legacy":
+                await send_text_message(
+                    user_id,
+                    "📄 File .doc (Word cũ) này mình chưa đọc được nội dung.\n\n"
+                    "💡 Thử 1 trong 2 cách:\n"
+                    "1️⃣ Mở file → Save As → chọn .docx → gửi lại\n"
+                    "2️⃣ Chụp ảnh từng trang tài liệu → gửi ảnh cho mình 📸"
+                )
+            else:
+                await send_text_message(
+                    user_id,
+                    "Không đọc được nội dung file này. Thử chụp ảnh tài liệu và gửi ảnh cho mình!"
+                )
             return
 
         structured = await summarize_text_structured(text)
