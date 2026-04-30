@@ -1,0 +1,350 @@
+# 🎓 Phân Tích Chi Tiết: Pivot CHAT HAY → AI HỌC TẬP
+
+## 1. THỊ TRƯỜNG
+
+### 1.1 Quy mô thị trường Việt Nam
+
+| Metric | Số liệu | Nguồn |
+|--------|---------|-------|
+| **Tổng học sinh/sinh viên** | **~30 triệu** (2025-2026) | Bộ GD&ĐT |
+| **Thí sinh thi THPT QG 2026** | **1.01 triệu** | VietnamNet |
+| **EdTech market size** | **$1.1-1.2 tỷ USD** (2025) | PS Market Research |
+| **Growth rate** | **12-18% CAGR** | IMARC Group |
+| **Chi tiêu GD/hộ gia đình** | **20-25% thu nhập** | World Bank |
+| **80% EdTech VN** | Tập trung K-12 | Ken Research |
+
+> [!IMPORTANT]
+> **Insight quan trọng:** Phụ huynh Việt Nam chi 20-25% thu nhập cho giáo dục — cao nhất khu vực. Họ sẵn sàng trả tiền cho bất kỳ thứ gì giúp con học tốt hơn.
+
+### 1.2 Zalo = Kênh phân phối hoàn hảo
+
+| Metric | Số liệu |
+|--------|---------|
+| **Zalo MAU** | **79.2 triệu** (cuối 2025) |
+| **Tin nhắn/ngày** | **2.1 tỷ** |
+| **Penetration** | **>80%** dân số VN |
+| **Preference vs Facebook** | **56% vs 23%** |
+| **Gen Z dùng Zalo để** | Học tập, chia sẻ file, nhóm lớp |
+
+> [!TIP]
+> Học sinh dùng Zalo hàng ngày cho nhóm lớp, liên lạc thầy cô, chia sẻ bài. **Không cần cài app mới** = friction = 0.
+
+### 1.3 Đối thủ cạnh tranh
+
+| Đối thủ | Strengths | Weaknesses |
+|---------|-----------|------------|
+| **Quizlet** | Brand lớn, database khổng lồ | Tiếng Anh, không optimize cho VN, cần cài app |
+| **Photomath** | Giải toán chụp ảnh | Chỉ toán, không có văn/lý/hóa/sử |
+| **ChatGPT** | AI mạnh | Không nằm trên Zalo, cần cài app, trả phí USD |
+| **Google Gemini** | Free, AI mạnh | Chung chung, không optimize cho HS VN |
+| **Prep.vn / Topica** | Localized VN | Khóa học truyền thống, không AI tóm tắt |
+| **CHAT HAY (tương lai)** | **Trên Zalo (0 friction), AI mạnh, optimize cho HS VN, tiếng Việt native** | Mới, chưa có brand |
+
+> [!NOTE]
+> **Khoảng trống thị trường:** Không có AI study assistant nào **nằm trên Zalo** và **optimize cho chương trình VN**. Đây là blue ocean.
+
+---
+
+## 2. SẢN PHẨM — Features & Flows
+
+### 2.1 Core Features (MVP — Phase 1)
+
+#### 📸 Feature 1: Chụp Ảnh → Flashcards + Quiz
+```
+User chụp ảnh trang sách/slide
+    ↓
+AI đọc nội dung (Gemini Vision — đã có!)
+    ↓
+Tạo ra:
+  📝 5-10 Flashcards (thuật ngữ ↔ định nghĩa)
+  ❓ 5 câu trắc nghiệm (4 đáp án)
+  📋 Tóm tắt kiến thức (đã có!)
+    ↓
+User ôn tập ngay trên Zalo bằng buttons
+```
+
+**Flow trên Zalo (interactive buttons):**
+```
+Bot: "📝 Đã tạo 5 flashcard từ bài Lịch Sử!"
+     [🔄 Lật card 1] [❓ Làm quiz] [📋 Tóm tắt] [📤 Share]
+
+User bấm "Lật card 1":
+Bot: "📖 Cách mạng tháng 8
+      → Diễn ra ngày 19/8/1945, do Việt Minh lãnh đạo..."
+     [✅ Nhớ rồi] [❌ Chưa nhớ] [➡️ Card tiếp]
+
+User bấm "Làm quiz":
+Bot: "❓ Câu 1/5: Cách mạng tháng 8 diễn ra năm nào?
+      A. 1944    B. 1945    C. 1946    D. 1954"
+     [A] [B] [C] [D]
+
+User bấm "B":
+Bot: "✅ Chính xác! 🎉
+      Điểm: 1/5 — Tiếp tục nào!"
+     [➡️ Câu tiếp] [🔙 Về flashcard]
+```
+
+#### 📄 Feature 2: Gửi File Bài Giảng → Study Notes
+```
+User gửi file PDF/Word/Excel slide bài giảng
+    ↓
+AI tóm tắt (đã có!)
+    ↓
+THÊM MỚI:
+  📝 Flashcards từ nội dung
+  ❓ Đề kiểm tra thử (10-20 câu)
+  🎯 Kiến thức trọng tâm (khoanh vùng thi)
+  🔊 Nghe audio ôn bài (đã có TTS!)
+```
+
+#### 💡 Feature 3: Giải Bài Tập Step-by-Step
+```
+User chụp ảnh bài tập (Toán, Lý, Hóa...)
+    ↓
+AI nhận diện đề bài
+    ↓
+Giải step-by-step:
+  "Bước 1: Xác định công thức..."
+  "Bước 2: Thay số..."
+  "Bước 3: Kết quả = ..."
+    ↓
+[📖 Giải thích thêm] [🔄 Bài tương tự] [❓ Hỏi chỗ không hiểu]
+```
+
+### 2.2 Advanced Features (Phase 2-3)
+
+| Feature | Mô tả | Priority |
+|---------|--------|----------|
+| **⏰ Spaced Repetition** | Bot nhắc ôn flashcard theo thuật toán SM-2 (1 ngày → 3 ngày → 7 ngày → 30 ngày). Dùng Zalo ZNS | Phase 2 |
+| **📊 Dashboard điểm** | Theo dõi tiến độ ôn tập, % đúng/sai, môn yếu | Phase 2 |
+| **👥 Ôn nhóm** | Tạo bộ flashcard → share link cho cả lớp → thi đua điểm | Phase 2 |
+| **📅 Lịch ôn thi** | Nhập ngày thi → AI tạo kế hoạch ôn tập → nhắc hàng ngày | Phase 3 |
+| **🎯 Đề thi theo SGK** | AI tạo đề theo đúng chương trình THPT/THCS VN | Phase 3 |
+
+---
+
+## 3. KỸ THUẬT — Leverage code hiện tại
+
+### 3.1 Cái ĐÃ CÓ (reuse 80%)
+
+| Component | Status | Reuse |
+|-----------|--------|-------|
+| Gemini Vision (đọc ảnh) | ✅ Production | 100% — chỉ đổi prompt |
+| Document parser (PDF/Word) | ✅ Production | 100% |
+| Excel parser (đang build) | 🔨 Building | 100% |
+| Q&A system | ✅ Production | 90% — thêm quiz mode |
+| TTS audio | ✅ Production | 100% — nghe ôn bài |
+| Interactive buttons | ✅ Production | 100% — quiz buttons |
+| Token management | ✅ Production | 100% |
+| Rate limiting | ✅ Production | 100% |
+| User state (Supabase) | ✅ Production | 80% — thêm progress tracking |
+
+### 3.2 Cái CẦN LÀM MỚI
+
+| Component | Effort | Chi tiết |
+|-----------|--------|----------|
+| **Flashcard prompt** | Small | Prompt Gemini output JSON: `[{front, back}]` |
+| **Quiz prompt** | Small | Prompt output: `[{question, options:[A,B,C,D], correct, explanation}]` |
+| **Quiz game engine** | Medium | State machine: pending_action → track câu hiện tại, điểm |
+| **Homework solver prompt** | Small | Prompt: step-by-step giải bài |
+| **Progress tracking (DB)** | Medium | Supabase tables: flashcard_progress, quiz_scores |
+| **Spaced repetition scheduler** | Medium | Background task nhắc ôn bài (ZNS hoặc message window) |
+
+### 3.3 Kiến trúc kỹ thuật
+
+```mermaid
+flowchart TB
+    subgraph "Zalo OA (hiện có)"
+        A[User gửi ảnh/file] --> B[Webhook Handler]
+    end
+
+    subgraph "AI Engine (Gemini)"
+        B --> C{Detect Mode}
+        C -->|"Tóm tắt (hiện có)"| D[Summary Prompt]
+        C -->|"📝 Flashcard (mới)"| E[Flashcard Prompt]
+        C -->|"❓ Quiz (mới)"| F[Quiz Prompt]
+        C -->|"💡 Giải bài (mới)"| G[Solver Prompt]
+    end
+
+    subgraph "Game Engine (mới)"
+        F --> H[Quiz State Machine]
+        H --> I["Track: câu hiện tại, điểm, streak"]
+    end
+
+    subgraph "Storage (Supabase — mở rộng)"
+        D --> J[(documents)]
+        E --> K[(flashcards)]
+        H --> L[(quiz_scores)]
+        I --> M[(user_progress)]
+    end
+
+    subgraph "Output (reuse buttons)"
+        J --> N[Summary + Buttons]
+        K --> O[Flashcard + Lật/Tiếp]
+        L --> P[Quiz + A/B/C/D]
+        G --> Q[Step-by-step + Hỏi thêm]
+    end
+```
+
+---
+
+## 4. KINH TẾ — Unit Economics
+
+### 4.1 Chi phí Gemini API
+
+Đang dùng **Gemini 2.5 Flash** (free tier):
+- Free: ~10-15 RPM, vài trăm request/ngày
+- Paid: **$0.30/1M input tokens, $2.50/1M output tokens**
+
+| Action | Tokens ước tính | Chi phí paid |
+|--------|----------------|--------------|
+| Tóm tắt 1 tài liệu | ~5K input + ~2K output | ~$0.007 (~170 VND) |
+| Tạo flashcard (5 cards) | ~3K input + ~1.5K output | ~$0.005 (~120 VND) |
+| Tạo quiz (5 câu) | ~3K input + ~2K output | ~$0.006 (~150 VND) |
+| Giải 1 bài tập | ~2K input + ~1K output | ~$0.004 (~100 VND) |
+| 1 câu Q&A | ~80K input + ~1K output | ~$0.027 (~650 VND) |
+
+### 4.2 Mô hình doanh thu
+
+| Gói | Giá | Giới hạn | Target |
+|-----|-----|----------|--------|
+| **FREE** | 0đ | 3 ảnh/ngày, 5 câu Q&A, quiz cơ bản | Dùng thử, hook |
+| **HỌC SINH** | **99K/tháng** | 30 ảnh/ngày, 20 Q&A, unlimited quiz, flashcard | HS phổ thông |
+| **SV / PRO** | **199K/tháng** | Unlimited, lịch ôn tập, spaced repetition, ôn nhóm | Sinh viên, IELTS |
+
+### 4.3 Unit Economics (kịch bản 10K users trả phí)
+
+| Metric | Con số |
+|--------|--------|
+| **Revenue/tháng** | 10,000 × 99K = **990M VND (~$40K)** |
+| **Gemini cost/user/tháng** | ~20 requests × 150 VND = **3,000 VND** |
+| **Tổng Gemini cost** | 10,000 × 3K = **30M VND (~$1.2K)** |
+| **Gross margin** | **(990M - 30M) / 990M = ~97%** |
+| **Server (Railway)** | ~$20/tháng (hiện tại) |
+| **Net margin** | **~95%+** |
+
+> [!TIP]
+> **Margin cực kỳ cao** vì Gemini Flash rẻ ($0.30/1M tokens) và output ngắn gọn (flashcard/quiz). Mỗi user trả 99K/tháng nhưng chỉ tốn ~3K chi phí AI.
+
+### 4.4 Kịch bản scale
+
+| Milestone | Users trả phí | MRR | Timeline |
+|-----------|--------------|-----|----------|
+| MVP launch | 0 | 0 | Tháng 1 |
+| Early traction | 100 | 10M VND | Tháng 2-3 |
+| Mùa thi THPT | 1,000 | 100M VND | Tháng 4-6 |
+| Word of mouth | 5,000 | 500M VND | Tháng 6-9 |
+| Scale marketing | 10,000+ | **~1 tỷ VND/tháng** | Tháng 12+ |
+
+---
+
+## 5. VIRAL GROWTH — Cỗ máy tăng trưởng
+
+### 5.1 Viral Loop tự nhiên
+
+```mermaid
+flowchart LR
+    A["1 HS dùng thử FREE"] --> B["Thấy hay, share cho bạn"]
+    B --> C["Bạn share cho cả nhóm lớp (40 người)"]
+    C --> D["Phụ huynh thấy con dùng"]
+    D --> E["PH share cho nhóm PH lớp"]
+    E --> F["Mua Premium cho con"]
+    F --> G["Con share quiz cho lớp khác"]
+    G --> C
+```
+
+**Viral coefficient ước tính:**
+- 1 HS → share cho 5-10 bạn → 2-3 người dùng tiếp → **K-factor ~1.5-2.0**
+- K > 1 = **tăng trưởng tự nhiên** (exponential growth không cần quảng cáo)
+
+### 5.2 Growth Triggers (mùa cao điểm)
+
+| Thời điểm | Event | Impact |
+|-----------|-------|--------|
+| **Tháng 3-4** | Kiểm tra giữa kỳ 2 | Traffic x2 |
+| **Tháng 5** | Thi cuối năm | Traffic x3 |
+| **Tháng 6** | **THI THPT QUỐC GIA** (1M thí sinh) | 🔥 Traffic x10 |
+| **Tháng 8-9** | Khai giảng, năm học mới | Traffic x2 |
+| **Tháng 10-11** | Kiểm tra giữa kỳ 1 | Traffic x2 |
+| **Tháng 12** | Thi cuối kỳ 1 | Traffic x3 |
+
+### 5.3 Go-to-Market Strategy
+
+| Kênh | Hành động | Cost |
+|------|-----------|------|
+| **TikTok** | Video "Chụp ảnh sách → AI tạo quiz trong 10 giây" | Free (organic) |
+| **Zalo Groups** | Seed vào nhóm lớp HS, nhóm phụ huynh | Free |
+| **Facebook Groups** | "Ôn thi THPT QG 2026", "Học sinh giỏi"... | Free |
+| **KOLs học đường** | Collab với TikToker/YouTuber education VN | 1-5M VND/video |
+| **Word of mouth** | Feature "Share quiz cho bạn" → viral loop | Free |
+
+---
+
+## 6. RỦI RO & GIẢI PHÁP
+
+| Rủi ro | Mức | Giải pháp |
+|--------|-----|-----------|
+| **AI trả lời sai** | 🟡 Trung bình | Disclaimer "AI tham khảo, không thay thế thầy cô". Cho user report sai |
+| **Gemini quota hết** | 🟡 Trung bình | Multi-key rotation (đã có!), nâng paid tier khi scale |
+| **Zalo OA bị restrict** | 🟡 Trung bình | Tuân thủ policy, không spam. OA < 10K followers = 500 msg/ngày |
+| **Đối thủ copy** | 🟢 Thấp | First-mover advantage, build brand, community lock-in |
+| **HS dùng để gian lận** | 🟡 Trung bình | Solver chỉ giải thích, không cho đáp án trần trụi. Thêm "Hiểu rồi" button |
+| **Scale cost** | 🟢 Thấp | Margin 95%+, cost chỉ tăng tuyến tính |
+
+### Rủi ro lớn nhất: Zalo OA message limit
+- **< 10K followers:** 500 tin/ngày
+- **≥ 10K followers:** 5% follower/ngày
+- **Giải pháp:** Phase 1 đủ 500 tin/ngày cho MVP. Khi hit 10K followers, có 500 tin/ngày → 10K+ followers mở ra nhiều hơn. Nếu cần scale mạnh hơn → chuyển sang **Zalo Mini App** (không giới hạn tin nhắn).
+
+---
+
+## 7. ROADMAP
+
+### Phase 1: MVP (2-3 tuần)
+> Mục tiêu: Launch, validate product-market fit
+
+- [ ] Hoàn thành Excel support (đang làm)
+- [ ] **Flashcard prompt** — chụp ảnh/gửi file → tạo flashcards
+- [ ] **Quiz prompt** — tạo câu trắc nghiệm từ nội dung
+- [ ] **Quiz game engine** — state machine cho quiz flow trên buttons
+- [ ] Homework solver mode (chụp bài tập → giải)
+- [ ] Rebrand UI messages: "CHAT HAY — Trợ lý học tập AI"
+- [ ] Update welcome message, menu cho học sinh
+
+### Phase 2: Engagement (1-2 tháng)
+> Mục tiêu: Tăng retention, daily active
+
+- [ ] Spaced repetition (nhắc ôn bài)
+- [ ] Quiz scoring + leaderboard đơn giản
+- [ ] Share flashcard/quiz cho bạn bè
+- [ ] Progress tracking (% ôn tập)
+- [ ] Payment integration (Zalo Pay / chuyển khoản)
+
+### Phase 3: Scale (2-4 tháng)
+> Mục tiêu: Growth marketing, monetization
+
+- [ ] Zalo Mini App (bypass message limit)
+- [ ] Đề thi theo chương trình VN (THPT, THCS)
+- [ ] Ôn nhóm (group study mode)
+- [ ] Marketing push trước mùa thi THPT QG
+- [ ] KOL partnerships
+
+---
+
+## 8. KẾT LUẬN
+
+### Tại sao hướng này đột phá?
+
+| Factor | Phân tích |
+|--------|-----------|
+| **Market** | 30M HS/SV, $1.2B EdTech, 20-25% income cho GD |
+| **Distribution** | 79M Zalo users, 0 friction (không cần cài app) |
+| **Competition** | Không ai làm AI study trên Zalo → blue ocean |
+| **Viral** | 1 HS → cả lớp → nhóm PH → K-factor > 1 |
+| **Revenue** | 99-199K/tháng × 10K users = **~1 tỷ VND/tháng** |
+| **Margin** | **95%+** (Gemini Flash cực rẻ) |
+| **Tech** | **80% code đã có**, chỉ cần thêm prompt + game engine |
+| **Timing** | Mùa thi THPT QG 6/2026 — chỉ còn 2 tháng để launch |
+
+> [!CAUTION]
+> **Timing cực kỳ quan trọng:** Thi THPT QG diễn ra tháng 6/2026. Nếu launch MVP trong tháng 5, bạn catch được **1.01 triệu thí sinh** đang ôn thi điên cuồng. Đây là cơ hội VÀNG chỉ đến 1 lần/năm.

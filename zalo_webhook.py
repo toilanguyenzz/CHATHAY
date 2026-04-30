@@ -1,9 +1,11 @@
 """Zalo OA webhook server — CHAT HAY v2.0
 
-Nâng cấp T4/2026:
-  - OCR: Trích xuất text từ ảnh + gửi kèm bản tóm tắt
-  - Document Classification: Phân loại tài liệu tự động
-  - Clean code: Xóa toàn bộ hàm trùng lặp
+Core features:
+  - Document summarization (PDF, Word, Image)
+  - Q&A about documents
+  - OCR text extraction
+  - TTS audio reading
+  - Document classification
 """
 
 import asyncio
@@ -12,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -31,31 +34,48 @@ from services.ai_summarizer import (
     summarize_pdf_images_structured,
     extract_ocr_text,
     get_doc_type_label,
+    answer_question_about_document,
+    _call_with_smart_routing,
 )
 from services.document_parser import extract_text, get_file_type, convert_pdf_to_images
 from services.tts_service import cleanup_audio, text_to_speech
 from services.token_store import load_token, load_tokens, save_tokens, get_token_info
 from services.db_service import (
-    save_vault_credential,
-    get_vault_credential,
-    list_vault_credentials,
     set_pending_action,
     get_pending_action,
     clear_pending_action,
+    delete_user_data,
+    delete_document_by_id,
+    get_user_docs,
+    get_active_doc,
+    get_active_doc_id,
+    save_document_text_temp,
+    get_document_text_temp,
+    renew_document_text_temp,
+    get_qa_count,
+    increment_qa_count,
+    reset_qa_count,
+    set_active_doc,
+    load_study_session,
+    save_study_session,
+    clear_study_session,
+    check_study_mode_limit,
+    increment_study_mode_usage,
+    get_study_mode_count_today,
 )
-from services.deadline_service import (
-    save_deadlines_from_summary,
-    get_user_deadlines,
-    get_upcoming_deadlines,
-    mark_deadline_done,
-    format_deadline_list,
-    format_deadline_saved_notice,
-    update_user_interaction,
-    get_pending_notifications,
-    set_message_sender,
-    start_reminder_scheduler,
-    stop_reminder_scheduler,
+from services.study_engine import (
+    QuizSession,
+    FlashcardSession,
+    time_to_readable,
 )
+from services.study_analytics import (
+    increment_sessions_started,
+    record_quiz_completion,
+    record_flashcard_completion,
+)
+from prompts.study_prompts import GENERATE_QUIZ_PROMPT, GENERATE_FLASHCARD_PROMPT
+
+PRODUCT_NAME = config.PRODUCT_NAME
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -72,6 +92,12 @@ ZALO_MAX_BUTTONS = 5
 ZALO_PRIMARY_POINT_BUTTONS = 4
 ZALO_SHOW_MORE_PAYLOAD = "XEM THEM"
 ZALO_BACK_TO_SUMMARY_PAYLOAD = "XEM TOM TAT"
+ZALO_DELETE_PAYLOAD = "XOA"
+ZALO_BUTTON_TITLE_MAX = 22
+NAMESPACE_SUMMARY = "SUMMARY_"
+NAMESPACE_MORE = "MORE_"
+MAX_QA_QUESTIONS_PER_DAY = 5
+QA_LIMIT_PER_DOC = 5  # 5 câu Q&A mỗi document
 
 # ═══════════════════════════════════════════════════════════════
 # TOKEN MANAGEMENT (v3 — fix triệt để token bị ghi đè sau redeploy)
@@ -110,6 +136,7 @@ ZALO_VERIFICATION_CODE = os.getenv(
 # ═══════════════════════════════════════════════════════════════
 
 user_daily_usage: dict[str, dict[str, int | str]] = {}
+user_qa_usage: dict[str, dict[str, int | str]] = {}  # Q&A quota tracking
 latest_summary_by_user: dict[str, dict[str, Any]] = {}
 last_image_url_by_user: dict[str, str] = {}  # Lưu URL ảnh gần nhất để trích xuất chữ khi cần
 _token_lock = asyncio.Lock()
@@ -118,6 +145,9 @@ _token_lock = asyncio.Lock()
 user_cooldowns: dict[str, float] = {}
 user_warnings: dict[str, float] = {}
 COOLDOWN_SECONDS = 15
+
+# Study Mode: Active sessions (in-memory + DB backup)
+study_sessions: dict[str, dict] = {}  # user_id -> serialized session dict
 
 # ═══════════════════════════════════════════════════════════════
 # TOKEN REFRESH (v3 — fix triệt để Invalid refresh token)
@@ -267,6 +297,24 @@ def check_rate_limit(user_id: str) -> bool:
     return int(user_daily_usage[user_id]["count"]) < config.FREE_DAILY_LIMIT
 
 
+def check_qa_limit(user_id: str) -> bool:
+    """Kiểm tra user còn quyền hỏi Q&A hôm nay không."""
+    today = time.strftime("%Y-%m-%d")
+    if user_id not in user_qa_usage:
+        user_qa_usage[user_id] = {"date": today, "count": 0}
+    if user_qa_usage[user_id]["date"] != today:
+        user_qa_usage[user_id] = {"date": today, "count": 0}
+    return int(user_qa_usage[user_id]["count"]) < MAX_QA_QUESTIONS_PER_DAY
+
+
+def increment_qa_usage(user_id: str):
+    """Tăng Q&A usage count cho user."""
+    today = time.strftime("%Y-%m-%d")
+    if user_id not in user_qa_usage or user_qa_usage[user_id]["date"] != today:
+        user_qa_usage[user_id] = {"date": today, "count": 0}
+    user_qa_usage[user_id]["count"] = int(user_qa_usage[user_id]["count"]) + 1
+
+
 def increment_usage(user_id: str):
     today = time.strftime("%Y-%m-%d")
     if user_id not in user_daily_usage or user_daily_usage[user_id]["date"] != today:
@@ -341,16 +389,39 @@ def get_summary_points(structured_summary: dict[str, Any]) -> list[dict[str, Any
     return list(structured_summary.get("points", []))
 
 
+
+
+
+
+def truncate_button_title(title: str, max_len: int = ZALO_BUTTON_TITLE_MAX) -> str:
+    """Cắt title button cho phù hợp với giới hạn Zalo (emoji + text)."""
+    if len(title) <= max_len:
+        return title
+    # Cắt ở giữa từ, tránh cắt giữa emoji sequence
+    return title[: max_len - 1].rstrip() + "…"
+
+
 # ═══════════════════════════════════════════════════════════════
 # BUTTON BUILDERS
 # ═══════════════════════════════════════════════════════════════
 
-def build_point_buttons(points: list[dict[str, Any]], payload_prefix: str = "") -> list[dict[str, str]]:
+def build_point_buttons(
+    points: list[dict[str, Any]],
+    payload_prefix: str = "",
+    namespace: str = NAMESPACE_SUMMARY,
+) -> list[dict[str, str]]:
     buttons: list[dict[str, str]] = []
     for point in points:
-        payload = f"{payload_prefix}{point['index']}".strip()
+        # Namespace để phân biệt context (summary vs more-points)
+        raw_payload = f"{namespace}{payload_prefix}{point['index']}".strip()
+        payload = raw_payload
+
+        # Truncate title để đảm bảo Zalo display không bị cắt
+        raw_title = f"📌 Ý {point['index']}"
+        title = truncate_button_title(raw_title)
+
         buttons.append({
-            "title": f"📌 Ý {point['index']}",
+            "title": title,
             "type": "oa.query.show",
             "payload": payload,
         })
@@ -358,21 +429,67 @@ def build_point_buttons(points: list[dict[str, Any]], payload_prefix: str = "") 
 
 
 def build_summary_buttons(structured_summary: dict[str, Any]) -> list[dict[str, str]]:
+    """Build buttons: point buttons + Study Mode (if education) + Q&A + Delete."""
     points = get_summary_points(structured_summary)
     primary_points = points[:ZALO_PRIMARY_POINT_BUTTONS]
-    buttons = build_point_buttons(primary_points)
-    if len(points) > ZALO_PRIMARY_POINT_BUTTONS and len(buttons) < ZALO_MAX_BUTTONS:
+    buttons = build_point_buttons(primary_points, namespace=NAMESPACE_SUMMARY)
+
+    doc_type = structured_summary.get("document_type", "")
+    is_study = doc_type == "education"
+
+    # ── Study Mode: Prioritize Quiz & Flashcard ──
+    if is_study:
+        # Q&A trigger
+        if len(buttons) < ZALO_MAX_BUTTONS:
+            buttons.append({
+                "title": "❓ Hỏi thêm",
+                "type": "oa.query.show",
+                "payload": "HỎI THÊM",
+            })
+        # Quiz button
+        if len(buttons) < ZALO_MAX_BUTTONS:
+            buttons.append({
+                "title": "🎮 Làm quiz",
+                "type": "oa.query.show",
+                "payload": "STUDY_START_QUIZ",
+            })
+        # Flashcard button
+        if len(buttons) < ZALO_MAX_BUTTONS:
+            buttons.append({
+                "title": "🗂️ Tạo flashcard",
+                "type": "oa.query.show",
+                "payload": "STUDY_START_FLASHCARD",
+            })
+    else:
+        # Non-study: standard layout
+        if len(points) > ZALO_PRIMARY_POINT_BUTTONS and len(buttons) < ZALO_MAX_BUTTONS:
+            buttons.append({
+                "title": "📚 Ý còn lại",
+                "type": "oa.query.show",
+                "payload": ZALO_SHOW_MORE_PAYLOAD,
+            })
+        if len(buttons) < ZALO_MAX_BUTTONS:
+            buttons.append({
+                "title": "❓ Hỏi thêm",
+                "type": "oa.query.show",
+                "payload": "HỎI THÊM",
+            })
+
+    # Delete button (always)
+    if len(buttons) < ZALO_MAX_BUTTONS:
         buttons.append({
-            "title": "📚 Ý còn lại",
+            "title": "🗑️ Xóa tài liệu",
             "type": "oa.query.show",
-            "payload": ZALO_SHOW_MORE_PAYLOAD,
+            "payload": ZALO_DELETE_PAYLOAD,
         })
+
     return buttons
 
 
 def build_more_points_buttons(structured_summary: dict[str, Any]) -> list[dict[str, str]]:
+    """Build buttons for remaining points + back button."""
     points = get_summary_points(structured_summary)[ZALO_PRIMARY_POINT_BUTTONS:]
-    buttons = build_point_buttons(points[: ZALO_MAX_BUTTONS - 1])
+    buttons = build_point_buttons(points[: ZALO_MAX_BUTTONS - 1], namespace=NAMESPACE_MORE)
     if len(buttons) < ZALO_MAX_BUTTONS:
         buttons.append({
             "title": "🔙 Tóm tắt",
@@ -391,38 +508,60 @@ def format_summary_menu(
     structured_summary: dict[str, Any],
     elapsed_seconds: float | None = None,
 ) -> str:
-    """Format bản tóm tắt chính với doc type label."""
+    """Format bản tóm tắt chính."""
     points = get_summary_points(structured_summary)
     lines: list[str] = []
 
-    # Document type badge (NEW)
+    # Document type badge
     doc_type = structured_summary.get("document_type", "")
     if doc_type:
         type_label = get_doc_type_label(doc_type)
         lines.append(f"{type_label}")
-        lines.append("")
 
-    lines.append(f"📖 Đọc xong! Tóm tắt '{title}':")
+    # Header
     if elapsed_seconds is not None:
-        lines.append(f"⏱ Xử lý trong {elapsed_seconds:.0f} giây")
-    lines.append("")
+        lines.append(f"✅ Đọc xong trong {elapsed_seconds:.0f}s!")
+    else:
+        lines.append("✅ Đọc xong!")
+    lines.append(f"📄 {title}")
+    lines.append("──────────────────")
 
+    # Overview
     overview = structured_summary.get("overview", "")
     if overview:
-        lines.append(f"📌 Tổng quan: {overview}\n")
+        lines.append(f"\n📌 {overview}\n")
 
-    lines.append(f"📋 {len(points)} ý nổi bật:")
+    # Points list
+    lines.append(f"📋 {len(points)} ý chính:")
     for point in points:
-        lines.append(f"🔹 {point['index']}. {point['title']}: {clean_preview_text(point['brief'])}")
+        lines.append(f"  {point['index']}. {point['title']}")
+        lines.append(f"     → {clean_preview_text(point['brief'])}")
 
+    # Action items
+    action_items = structured_summary.get("action_items", [])
+    if action_items:
+        lines.append("")
+        lines.append("🎯 Việc cần làm:")
+        for item in action_items:
+            lines.append(f"  • {item}")
+
+    # Suggested questions
+    suggested_questions = structured_summary.get("suggested_questions", [])
+    if suggested_questions:
+        lines.append("")
+        lines.append("💡 Bạn có thể muốn hỏi:")
+        for q in suggested_questions:
+            lines.append(f"  → {q}")
+
+    # Navigation
     lines.append("")
+    lines.append("──────────────────")
     if len(points) > ZALO_PRIMARY_POINT_BUTTONS:
         lines.append(
-            f"👉 Bấm nút xem {ZALO_PRIMARY_POINT_BUTTONS} ý đầu. "
-            f"Bấm 'Ý còn lại' hoặc nhắn số {ZALO_PRIMARY_POINT_BUTTONS + 1}-{len(points)} để xem tiếp."
+            f"👇 Bấm nút xem chi tiết | Nhắn số {ZALO_PRIMARY_POINT_BUTTONS + 1}-{len(points)} xem thêm"
         )
     else:
-        lines.append("👉 Bấm vào ý muốn xem kỹ, hoặc nhắn 'NGHE 1', 'NGHE 2'... để nghe audio.")
+        lines.append("👇 Bấm nút xem chi tiết | Nhắn NGHE 1 để nghe audio")
 
     return "\n".join(lines)
 
@@ -441,10 +580,15 @@ def format_remaining_points_menu(structured_summary: dict[str, Any]) -> str:
 
 
 def format_point_detail(structured_summary: dict[str, Any], point_index: int) -> str:
+    """Format chi tiết 1 ý — dễ đọc, hấp dẫn."""
     point = structured_summary["points"][point_index - 1]
+    total = len(structured_summary["points"])
     return (
-        f"📝 Ý {point_index}: {point['title']}\n\n"
-        f"Chi tiết:\n{point['detail']}"
+        f"📝 Ý {point_index}/{total}: {point['title']}\n"
+        f"──────────────────\n\n"
+        f"{point['detail']}\n\n"
+        f"──────────────────\n"
+        f"🔊 Nhắn 'NGHE {point_index}' để nghe audio"
     )
 
 
@@ -464,54 +608,51 @@ def format_ocr_result(ocr_text: str) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def get_welcome_message() -> str:
-    """Welcome message v2.0."""
+    """Welcome message v3.0 — neutral, universal."""
     return (
-        "🌟 Chào mừng bạn đến với CHAT HAY — Trợ lý đọc tài liệu AI!\n\n"
-        "Khác với AI chat thông thường, mình chuyên ĐỌC & TÓM TẮT "
-        "tài liệu thành các ý chính dễ hiểu nhất.\n\n"
-        "📎 Gửi cho mình:\n"
-        "• PDF, Word (.docx) → tóm tắt chuyên sâu\n"
-        "• Ảnh chụp tài liệu → phân tích AI + trích xuất chữ\n"
-        "• Đoạn văn bản dài → rút gọn thành ý chính\n\n"
-        "🚀 Mình làm được:\n"
-        "• Tóm tắt thông minh (3-8 ý theo độ phức tạp)\n"
-        "• Trích xuất chữ từ ảnh (bấm nút khi cần)\n"
-        "• Phân loại tài liệu (hóa đơn, hợp đồng, giấy tờ…)\n"
-        "• Đọc nội dung bằng giọng nói 🔊\n\n"
-        "📩 Gửi file hoặc ảnh ngay để bắt đầu!"
+        f"👋 Chào bạn! Mình là {PRODUCT_NAME} — trợ lý đọc tài liệu bằng AI.\n\n"
+        "📸 Chụp ảnh hoặc gửi file bất kỳ tài liệu nào:\n"
+        "• Bài giảng, slide, sách\n"
+        "• Hóa đơn, hợp đồng\n"
+        "• Công văn, thông báo\n"
+        "• Bảng tính Excel\n"
+        "• Bất kỳ giấy tờ nào khó đọc\n\n"
+        "⚡ Mình tóm tắt trong 15 giây — rõ ràng, dễ hiểu!\n\n"
+        "🔒 Yên tâm nhé: Ảnh/file của bạn sẽ bị xóa đi ngay lập tức sau khi mình đọc xong, cực kỳ bảo mật nha!\n\n"
+        "Thử gửi 1 tấm ảnh ngay nhé! 📎"
     )
 
 
 def get_upload_prompt() -> str:
     return (
-        "📎 Gửi PDF, Word hoặc ảnh tài liệu nhé!\n"
-        "Mình sẽ tóm tắt cho bạn ngay."
+        "📸 Chụp ảnh tài liệu hoặc gửi file PDF/Word/Excel:\n"
+        "• Bài giảng, slide, sách\n"
+        "• Hóa đơn, hợp đồng, công văn\n"
+        "• Bảng tính Excel\n"
+        "• Bất kỳ giấy tờ nào cần tóm tắt\n\n"
+        "Hoặc gửi file PDF/Word/Excel cũng được! 📎"
     )
 
 
 def get_processing_message(kind: str = "tài liệu") -> str:
-    return f"📖 Đang đọc {kind} của bạn...\n⏳ Chờ khoảng 15-30 giây nhé!"
+    return f"📖 Đang đọc {kind} cho bạn...\n⏳ Chờ xíu nhé (tầm 15s). Đọc xong mình sẽ dọn dẹp file ngay cho bạn an tâm nha! 🔒"
 
 
 def get_menu_message() -> str:
     """Menu tính năng."""
     return (
-        "📖 CHAT HAY — Trợ lý đọc tài liệu AI\n"
+        f"📖 {PRODUCT_NAME} — Trợ lý đọc tài liệu AI\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "📎 GỬI FILE → Tóm tắt PDF, Word chuyên sâu\n"
-        "🖼️ GỬI ẢNH → Phân tích AI + trích xuất chữ (tùy chọn)\n"
-        "✍️ GỬI VĂN BẢN DÀI → Rút gọn thành ý chính\n\n"
+        "📸 GỬI ẢNH → Chụp tài liệu, mình tóm tắt trong 15 giây\n"
+        "📎 GỬI FILE → PDF, Word, Excel — mình đọc và phân tích\n"
+        "📋 TRICH XUAT → Trích xuất chữ từ ảnh vừa gửi\n\n"
         "⌨️ Lệnh nhanh:\n"
         "• Nhắn số 1-8 → Xem chi tiết từng ý\n"
         "• NGHE 1, NGHE 2… → Nghe audio từng ý\n"
-        "• TRICH XUAT → Trích xuất chữ từ ảnh vừa gửi\n"
-        "• DEADLINE → Xem tất cả deadline sắp đến\n"
-        "• XONG [keyword] → Đánh dấu deadline hoàn thành\n"
+        "• ❓ HỎI THÊM → Hỏi đáp về tài liệu vừa gửi\n"
+        "• 📚 FILES → Xem danh sách tài liệu\n"
+        "• XÓA → Xem & xóa tài liệu đã gửi 🔒\n"
         "• MENU → Xem bảng này\n\n"
-        "✨ Tại sao chọn CHAT HAY?\n"
-        "• Phân tích nội dung tài liệu chuyên sâu\n"
-        "• Phân loại tài liệu tự động (hóa đơn, hợp đồng…)\n"
-        "• ⏰ Tự trích xuất deadline & nhắc nhở đúng hạn\n\n"
         f"📊 Miễn phí: {config.FREE_DAILY_LIMIT} lượt/ngày"
     )
 
@@ -618,6 +759,75 @@ async def send_remaining_points_menu(user_id: str, structured_summary: dict[str,
     await send_long_text_message(user_id, text, buttons)
 
 
+async def send_summary_with_qa_buttons(
+    user_id: str,
+    title: str,
+    structured_summary: dict[str, Any],
+    elapsed_seconds: float | None = None,
+):
+    """Gửi tóm tắt với buttons tối ưu cho engagement.
+
+    Layout 5 nút (Zalo max = 5):
+      - Study Mode (education docs): Quiz, Flashcard
+      - Q&A trigger
+      - Point detail buttons
+      - Suggested questions
+    """
+    text = format_summary_menu(title, structured_summary, elapsed_seconds)
+    points = get_summary_points(structured_summary)
+    suggested_questions = structured_summary.get("suggested_questions", [])
+    doc_type = structured_summary.get("document_type", "")
+
+    buttons: list[dict[str, str]] = []
+
+    # ── Study Mode Promotion (if education/study material) ──
+    if doc_type == "education":
+        # Thêm nút Quiz và Flashcard
+        buttons.append({
+            "title": "🎮 Làm quiz",
+            "type": "oa.query.show",
+            "payload": "STUDY_START_QUIZ",
+        })
+        buttons.append({
+            "title": "🗂️ Tạo flashcard",
+            "type": "oa.query.show",
+            "payload": "STUDY_START_FLASHCARD",
+        })
+
+    # ── Slot 1-2: Point detail buttons (tối đa 2) ──
+    for point in points[:2]:
+        if len(buttons) >= ZALO_MAX_BUTTONS:
+            break
+        raw_title = f"📌 Ý {point['index']}: {point['title'][:18]}"
+        buttons.append({
+            "title": truncate_button_title(raw_title),
+            "type": "oa.query.show",
+            "payload": f"{NAMESPACE_SUMMARY}{point['index']}",
+        })
+
+    # ── Slot: Q&A trigger (luôn có) ──
+    if len(buttons) < ZALO_MAX_BUTTONS:
+        buttons.append({
+            "title": "❓ Hỏi thêm",
+            "type": "oa.query.show",
+            "payload": "HỎI THÊM",
+        })
+
+    # ── Suggested questions (nếu còn slot) ──
+    max_sq = 1 if len(points) > 2 else 1
+    for q in suggested_questions[:max_sq]:
+        if len(buttons) >= ZALO_MAX_BUTTONS:
+            break
+        display = q[:25] + "…" if len(q) > 25 else q
+        buttons.append({
+            "title": f"💬 {display}",
+            "type": "oa.query.show",
+            "payload": f"HỎI: {q}",
+        })
+
+    await send_long_text_message(user_id, text, buttons)
+
+
 # ═══════════════════════════════════════════════════════════════
 # FILE DOWNLOAD
 # ═══════════════════════════════════════════════════════════════
@@ -693,6 +903,128 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
         await send_text_message(user_id, get_menu_message())
         return True
 
+    # ── FILES / DANH SÁCH ──
+    if normalized in {"files", "file", "danh sách", "danh sach", "liệt kê", "liet ke", "xem file", "danh sách file"}:
+        await handle_files_command(user_id)
+        return True
+
+    # ── HỎI THÊM (Q&A trigger) ──
+    if normalized in {"hỏi thêm", "hoi them", "hỏi thêm về file này", "hỏi thêm về file", "qa", "hỏi"}:
+        # Check Q&A quota trước khi cho phép
+        if not check_qa_limit(user_id):
+            await send_text_message(
+                user_id,
+                f"⚠️ Bạn đã dùng hết {MAX_QA_QUESTIONS_PER_DAY} câu hỏi Q&A hôm nay rồi!\n\n"
+                "📅 Quyền hỏi đáp sẽ được reset vào ngày mai.\n"
+                "📄 Gửi tài liệu mới để được tóm tắt và hỏi thêm nhé!"
+            )
+            return True
+
+        # Check document-level limit
+        active_doc = get_active_doc(user_id)
+        if active_doc:
+            doc_id = active_doc.get("id", "")
+            current_doc_count = get_qa_count(user_id, doc_id)
+            if current_doc_count >= QA_LIMIT_PER_DOC:
+                await send_text_message(
+                    user_id,
+                    f"⚠️ Bạn đã hỏi {QA_LIMIT_PER_DOC}/{QA_LIMIT_PER_DOC} câu cho tài liệu này rồi!\n\n"
+                    "💡 Muốn hỏi thêm? Gửi lại file để mở phiên mới nhé.\n"
+                    "Hoặc gửi tài liệu khác — mình luôn sẵn sàng! 📎"
+                )
+                return True
+
+        remaining = MAX_QA_QUESTIONS_PER_DAY - int(user_qa_usage.get(user_id, {}).get("count", 0))
+        set_pending_action(user_id, "qa_session", {})
+        await send_text_message(
+            user_id,
+            f"❓ Hãy đặt câu hỏi về tài liệu này — mình sẽ phân tích và trả lời ngay!\n\n"
+            f"📊 Còn {remaining} câu hỏi hôm nay."
+        )
+        return True
+
+    # ── HỎI: prefix (từ suggested questions buttons) ──
+    if text.strip().upper().startswith("HỎI:"):
+        question = text.strip()[4:].strip()
+        if question:
+            await handle_qa_session(user_id, question)
+            return True
+
+    # ── XÓA DỮ LIỆU: 3 flow ──
+    # "xóa" → hiện danh sách file
+    # "xóa 2" → xóa file số 2
+    # "xóa hết" / "xóa tất cả" → xóa toàn bộ
+    import re as _re
+    _xoa_match = _re.match(r'^(?:xoa|xóa)\s*(\d+)?\s*(.*)', normalized)
+    if _xoa_match:
+        number_part = _xoa_match.group(1)  # "2" trong "xóa 2"
+        text_part = (_xoa_match.group(2) or "").strip()  # "hết" trong "xóa hết"
+
+        # Flow 3: "xóa hết" / "xóa tất cả" / "xóa dữ liệu"
+        if text_part in {"hết", "het", "tất cả", "tat ca", "dữ liệu", "du lieu", "sạch", "sach", "toàn bộ", "toan bo"}:
+            delete_user_data(user_id)
+            await send_text_message(
+                user_id,
+                "✅ Mình đã dọn dẹp sạch sẽ toàn bộ tài liệu và lịch sử của bạn rồi nhé. Mọi thứ trống trơn như mới!\n\n"
+                "Bất cứ khi nào cần đọc tài liệu, bạn cứ gửi lại cho mình nha. Mình luôn ở đây! 😊"
+            )
+            return True
+
+        # Lấy danh sách file của user
+        docs = get_user_docs(user_id)
+
+        # Flow 2: "xóa 2" → xóa file số 2
+        if number_part:
+            idx = int(number_part)
+            if not docs:
+                await send_text_message(
+                    user_id,
+                    "💭 Bạn chưa có tài liệu nào để xóa cả. Gửi ảnh hoặc file cho mình đọc trước nhé! 📸"
+                )
+                return True
+            if idx < 1 or idx > len(docs):
+                await send_text_message(
+                    user_id,
+                    f"❌ Số {idx} không hợp lệ. Bạn có {len(docs)} tài liệu (số 1 đến {len(docs)}).\n"
+                    "Nhắn 'xóa' để xem danh sách nha!"
+                )
+                return True
+
+            doc = docs[idx - 1]
+            doc_name = doc.get("name", "Tài liệu")
+            doc_id = doc.get("id", "")
+            delete_document_by_id(user_id, doc_id)
+            await send_text_message(
+                user_id,
+                f"🗑️ Đã xóa thành công: **{doc_name}**\n\n"
+                "✅ Dữ liệu của bạn đã được dọn sạch. Yên tâm nhé! 🔒\n\n"
+                "Cần xóa thêm? Nhắn 'xóa' để xem danh sách còn lại."
+            )
+            return True
+
+        # Flow 1: "xóa" không có số → hiện danh sách
+        if not docs:
+            await send_text_message(
+                user_id,
+                "💭 Bạn chưa có tài liệu nào cả — không có gì cần xóa!\n\n"
+                "Bất cứ khi nào cần đọc tài liệu, cứ gửi ảnh hoặc file cho mình nha! 📸"
+            )
+            return True
+
+        lines = ["📚 Danh sách tài liệu của bạn:\n"]
+        for i, doc in enumerate(docs, 1):
+            doc_name = doc.get("name", "Tài liệu")
+            doc_type = doc.get("doc_type", doc.get("type", "file"))
+            icon = {"image": "🖼️", "file": "📎", "pdf": "📄"}.get(doc_type, "📄")
+            lines.append(f"  {icon} {i}. {doc_name}")
+
+        lines.append("\n🗑️ Nhắn 'xóa 1', 'xóa 2'... để xóa từng file")
+        lines.append("🧹 Nhắn 'xóa hết' để xóa toàn bộ")
+        lines.append("\n🔒 Dữ liệu của bạn luôn được bảo mật!")
+
+        await send_text_message(user_id, "\n".join(lines))
+        return True
+
     # ── TRÍCH XUẤT CHỮ (opt-in, tiết kiệm token) ──
     if normalized in {"trich xuat", "trích xuất", "trích xuất chữ", "trich xuat chu", "lay chu", "lấy chữ"}:
         await handle_ocr_request(user_id)
@@ -707,7 +1039,7 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
     # ── QUAY LẠI TÓM TẮT ──
     if normalized in {ZALO_BACK_TO_SUMMARY_PAYLOAD.lower(), "xem tóm tắt", "xem tom tat"}:
         if latest:
-            await send_summary_with_interactive_buttons(user_id, latest["title"], latest["data"])
+            await send_summary_with_qa_buttons(user_id, latest["title"], latest["data"])
             return True
 
     # ── NGHE AUDIO ──
@@ -720,17 +1052,33 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
         await send_audio_for_point(user_id, point_index)
         return True
 
-    # ── XEM CHI TIẾT BẰNG SỐ ──
+    # ── XEM CHI TIẾT TỪ BUTTON (payload với namespace) ──
+    if latest:
+        norm_upper = normalized.upper()
+        if norm_upper.startswith(NAMESPACE_SUMMARY) or norm_upper.startswith(NAMESPACE_MORE):
+            # Extract số từ payload: "SUMMARY_1" → "1"
+            num_part = norm_upper.replace(NAMESPACE_SUMMARY, "").replace(NAMESPACE_MORE, "")
+            if num_part.isdigit():
+                point_index = int(num_part)
+                if 1 <= point_index <= len(latest["data"]["points"]):
+                    detail_text = format_point_detail(latest["data"], point_index)
+                    detail_buttons = [
+                        {"title": f"🔊 Nghe đọc Ý {point_index}", "type": "oa.query.show", "payload": f"NGHE {point_index}"},
+                        {"title": "❓ Hỏi thêm về file", "type": "oa.query.show", "payload": "HỎI THÊM"},
+                        {"title": "🔙 Xem tóm tắt", "type": "oa.query.show", "payload": ZALO_BACK_TO_SUMMARY_PAYLOAD},
+                    ]
+                    await send_long_text_message(user_id, detail_text, detail_buttons)
+                    return True
+
+    # ── XEM CHI TIẾT BẰNG SỐ (user nhắn số trực tiếp) ──
     if latest and normalized.isdigit():
         point_index = int(normalized)
         if 1 <= point_index <= len(latest["data"]["points"]):
             detail_text = format_point_detail(latest["data"], point_index)
             detail_buttons = [
-                {
-                    "title": f"🔊 Nghe đọc Ý {point_index}",
-                    "type": "oa.query.show",
-                    "payload": f"NGHE {point_index}"
-                }
+                {"title": f"🔊 Nghe đọc Ý {point_index}", "type": "oa.query.show", "payload": f"NGHE {point_index}"},
+                {"title": "❓ Hỏi thêm về file", "type": "oa.query.show", "payload": "HỎI THÊM"},
+                {"title": "🔙 Xem tóm tắt", "type": "oa.query.show", "payload": ZALO_BACK_TO_SUMMARY_PAYLOAD},
             ]
             await send_long_text_message(user_id, detail_text, detail_buttons)
             return True
@@ -741,80 +1089,11 @@ async def handle_interactive_command(user_id: str, text: str) -> bool:
         if point_index is not None and 1 <= point_index <= len(latest["data"]["points"]):
             detail_text = format_point_detail(latest["data"], point_index)
             detail_buttons = [
-                {
-                    "title": f"🔊 Nghe đọc Ý {point_index}",
-                    "type": "oa.query.show",
-                    "payload": f"NGHE {point_index}"
-                }
+                {"title": f"🔊 Nghe đọc Ý {point_index}", "type": "oa.query.show", "payload": f"NGHE {point_index}"},
+                {"title": "❓ Hỏi thêm về file", "type": "oa.query.show", "payload": "HỎI THÊM"},
+                {"title": "🔙 Xem tóm tắt", "type": "oa.query.show", "payload": ZALO_BACK_TO_SUMMARY_PAYLOAD},
             ]
             await send_long_text_message(user_id, detail_text, detail_buttons)
-            return True
-
-    # ── MẬT KHẨU [keyword] — Vault retrieval ──
-    if normalized.startswith(("mật khẩu", "mat khau", "password", "tk ", "tài khoản")):
-        keyword = normalized
-        for prefix in ["mật khẩu", "mat khau", "password", "tk", "tài khoản"]:
-            keyword = keyword.replace(prefix, "").strip()
-        if keyword:
-            cred = get_vault_credential(user_id, keyword)
-            if cred:
-                msg = (
-                    f"🔐 Thông tin đăng nhập **{cred['app_name']}**:\n\n"
-                    f"• Trang: {cred.get('url', 'không rõ')}\n"
-                    f"• Tài khoản: {cred['username']}\n"
-                    f"• Mật khẩu: {cred['password']}\n\n"
-                    f"Lưu trữ ngày {cred.get('saved_at', '')}. Chỉ bạn nhìn thấy tin nhắn này."
-                )
-                await send_text_message(user_id, msg)
-                return True
-            else:
-                # Liệt kê những gì đang lưu
-                all_creds = list_vault_credentials(user_id)
-                if all_creds:
-                    names = ", ".join(c["app_name"] for c in all_creds)
-                    await send_text_message(
-                        user_id,
-                        f"Không tìm thấy '{keyword}'. Bạn đang lưu: {names}.\n"
-                        "Nhắn 'mật khẩu [tên]' để xem."
-                    )
-                else:
-                    await send_text_message(user_id, "Bạn chưa lưu mật khẩu nào. Gửi ảnh chụp màn hình có tài khoản để mình lưu giúp nhé!")
-                return True
-
-    # ── DANH SÁCH MẬT KHẨU ──
-    if normalized in {"vault", "kho mat khau", "kho mật khẩu", "ds mat khau", "ds mật khẩu"}:
-        all_creds = list_vault_credentials(user_id)
-        if all_creds:
-            lines = ["🔐 Kho mật khẩu của bạn:"]
-            for c in all_creds:
-                lines.append(f"  • {c['app_name']} ({c['username']}) — lưu {c['saved_at']}")
-            lines.append("\nNhắn 'mật khẩu [tên]' để xem chi tiết.")
-            await send_text_message(user_id, "\n".join(lines))
-        else:
-            await send_text_message(user_id, "Bạn chưa lưu mật khẩu nào. Gửi ảnh chụp màn hình có tài khoản để mình lưu giúp nhé!")
-        return True
-
-    # ── DEADLINE / LỊCH — Xem tất cả deadline ──
-    if normalized in {"deadline", "deadlines", "lich", "lịch", "han", "hạn", "nhac nho", "nhắc nhở", "xem deadline"}:
-        deadlines = get_user_deadlines(user_id)
-        msg = format_deadline_list(deadlines)
-        await send_text_message(user_id, msg)
-        return True
-
-    # ── XONG [keyword] — Đánh dấu deadline hoàn thành ──
-    if normalized.startswith(("xong ", "done ", "hoan thanh ", "hoàn thành ")):
-        keyword = normalized
-        for prefix in ["xong", "done", "hoan thanh", "hoàn thành"]:
-            keyword = keyword.replace(prefix, "").strip()
-        if keyword:
-            if mark_deadline_done(user_id, keyword):
-                await send_text_message(user_id, f"✅ Đã đánh dấu hoàn thành deadline liên quan đến '{keyword}'!")
-            else:
-                await send_text_message(
-                    user_id,
-                    f"Không tìm thấy deadline nào liên quan đến '{keyword}'.\n"
-                    "Nhắn 'DEADLINE' để xem danh sách."
-                )
             return True
 
     return False
@@ -849,6 +1128,156 @@ async def handle_ocr_request(user_id: str):
         if os.path.exists(image_path):
             os.remove(image_path)
 
+# ═══════════════════════════════════════════════════════════════
+# Q&A SESSION HANDLER
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_qa_session(user_id: str, question: str):
+    """Xử lý câu hỏi về document đang active — chất lượng cao."""
+    # ── CHECK DAILY Q&A QUOTA (max 5 câu/ngày) ──
+    if not check_qa_limit(user_id):
+        await send_text_message(
+            user_id,
+            f"⚠️ Bạn đã dùng hết {MAX_QA_QUESTIONS_PER_DAY} câu hỏi Q&A hôm nay rồi!\n\n"
+            "📅 Quyền hỏi đáp sẽ được reset vào ngày mai.\n"
+            "📄 Gửi tài liệu mới để được tóm tắt và hỏi thêm nhé!"
+        )
+        return
+
+    active_doc = get_active_doc(user_id)
+    if not active_doc:
+        await send_text_message(user_id, "⚠️ Chưa có tài liệu nào. Gửi file hoặc ảnh trước nhé!")
+        return
+
+    doc_id = active_doc.get("id", "")
+    doc_title = active_doc.get("name", "tài liệu")
+
+    # ── CHECK DOCUMENT-LEVEL Q&A LIMIT (5 câu/document) ──
+    current_qa_count = get_qa_count(user_id, doc_id)
+    if current_qa_count >= QA_LIMIT_PER_DOC:
+        await send_text_message(
+            user_id,
+            f"⚠️ Bạn đã hỏi {QA_LIMIT_PER_DOC}/{QA_LIMIT_PER_DOC} câu cho tài liệu này rồi!\n\n"
+            "💡 Muốn hỏi thêm? Gửi lại file để mở phiên mới nhé.\n"
+            "Hoặc gửi tài liệu khác — mình luôn sẵn sàng! 📎"
+        )
+        return
+
+    # Lấy text tạm thời (lưu khi tóm tắt)
+    doc_text = get_document_text_temp(user_id, doc_id)
+    if not doc_text:
+        await send_text_message(
+            user_id,
+            "⚠️ Tài liệu này đã hết phiên hỏi đáp (quá 24h).\n\n"
+            "📎 Gửi lại file để mình đọc và bạn có thể hỏi thêm nhé!"
+        )
+        return
+
+    await send_text_message(user_id, "🤔 Đang phân tích tài liệu để trả lời...")
+
+    answer = await answer_question_about_document(question, doc_text, doc_title)
+
+    # ── Increment counters ──
+    increment_qa_usage(user_id)  # Daily quota
+    new_qa_count = increment_qa_count(user_id, doc_id)  # Document-level counter
+    remaining_doc = QA_LIMIT_PER_DOC - new_qa_count
+    remaining_daily = MAX_QA_QUESTIONS_PER_DAY - int(user_qa_usage[user_id]["count"])
+    logger.info(f"User {user_id} Q&A: doc_count={new_qa_count}/{QA_LIMIT_PER_DOC}, daily={remaining_daily}/{MAX_QA_QUESTIONS_PER_DAY}")
+
+    # ── Build smart follow-up buttons ──
+    response = f"💡 **Trả lời:**\n\n{answer}\n\n──────────────────\n📊 Đã hỏi {new_qa_count}/{QA_LIMIT_PER_DOC} câu cho tài liệu này."
+
+    buttons: list[dict[str, str]] = []
+
+    # Nút "Hỏi câu khác" — CHỈ hiển thị nếu còn lượt
+    if remaining_doc > 0:
+        buttons.append({
+            "title": f"❓ Hỏi thêm ({remaining_doc} câu còn)",
+            "type": "oa.query.show",
+            "payload": "HỎI THÊM",
+        })
+
+    # Lấy suggested questions từ latest summary (nếu có)
+    latest = get_latest_summary(user_id)
+    if latest:
+        sq = latest["data"].get("suggested_questions", [])
+        for q in sq[:2]:
+            if len(buttons) >= 4:
+                break
+            # Bỏ qua câu hỏi đã hỏi rồi (so sánh fuzzy)
+            if q.lower().strip("?") in question.lower():
+                continue
+            display = q[:30] + "…" if len(q) > 30 else q
+            buttons.append({
+                "title": f"💬 {display}",
+                "type": "oa.query.show",
+                "payload": f"HỎI: {q}",
+            })
+
+    # Nút quay lại tóm tắt + nghe audio
+    buttons.append({"title": "🔙 Xem tóm tắt", "type": "oa.query.show", "payload": "XEM TOM TAT"})
+    if len(buttons) < ZALO_MAX_BUTTONS:
+        buttons.append({"title": "🔊 Nghe đọc Ý 1", "type": "oa.query.show", "payload": "NGHE 1"})
+
+    await send_long_text_message(user_id, response, buttons[:ZALO_MAX_BUTTONS])
+
+    # Gia hạn TTL mỗi khi user hỏi (keep alive thêm 24h)
+    renew_document_text_temp(user_id, doc_id, ttl_hours=24)
+
+
+async def handle_files_command(user_id: str):
+    """Hiển thị danh sách tài liệu của user — với action buttons."""
+    docs = get_user_docs(user_id)
+
+    if not docs:
+        await send_text_message(
+            user_id,
+            "📭 Bạn chưa có tài liệu nào.\n\n"
+            "Gửi ảnh hoặc file cho mình đọc nhé! 📸"
+        )
+        return
+
+    lines = [f"📚 **Tài liệu của bạn** ({len(docs)}/5):\n"]
+
+    has_any_qa = False
+    for i, doc in enumerate(docs, 1):
+        name = doc.get("name", "Tài liệu")
+        doc_type = doc.get("doc_type", doc.get("type", "file"))
+        icon = {"image": "🖼️", "file": "📎", "pdf": "📄"}.get(doc_type, "📄")
+        doc_id = doc.get("id", "")
+        has_qa = get_document_text_temp(user_id, doc_id) is not None
+        if has_qa:
+            has_any_qa = True
+        qa_badge = " 💬" if has_qa else ""
+        lines.append(f"  {icon} {i}. {name}{qa_badge}")
+
+    lines.append("\n💬 = còn hỏi đáp được (24h)")
+
+    # ── Build action buttons ──
+    buttons: list[dict[str, str]] = []
+
+    if has_any_qa:
+        buttons.append({
+            "title": "❓ Hỏi về tài liệu",
+            "type": "oa.query.show",
+            "payload": "HỎI THÊM",
+        })
+
+    buttons.append({
+        "title": "🗑️ Xóa tài liệu",
+        "type": "oa.query.show",
+        "payload": "XOA",
+    })
+
+    if len(docs) > 1:
+        buttons.append({
+            "title": "🧹 Xóa tất cả",
+            "type": "oa.query.show",
+            "payload": "xóa hết",
+        })
+
+    await send_text_with_buttons(user_id, "\n".join(lines), buttons[:ZALO_MAX_BUTTONS])
+
 
 # ═══════════════════════════════════════════════════════════════
 # FASTAPI APP SETUP
@@ -857,30 +1286,24 @@ async def handle_ocr_request(user_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("CHAT HAY v3.0 — Zalo OA Webhook Server starting...")
+    logger.info("%s v4.0 — Zalo OA Webhook Server starting...", PRODUCT_NAME)
     logger.info("OA Token set: %s", "YES" if ZALO_OA_ACCESS_TOKEN else "NO")
     logger.info("OA Secret set: %s", "YES" if ZALO_OA_SECRET else "NO")
     logger.info("App ID: %s", ZALO_APP_ID)
-    logger.info("Features: OCR ✓ | Doc Classification ✓ | TTS ✓ | Deadline Reminder ✓ | Proactive Token Refresh ✓")
+    logger.info("Features: OCR ✓ | TTS ✓ | Doc Classification ✓")
     logger.info("=" * 60)
 
-    # Inject message sender vào deadline service (tránh circular import)
-    set_message_sender(send_text_message)
-
     # Khởi động background schedulers
-    scheduler_task = asyncio.create_task(start_reminder_scheduler())
     token_refresh_task = asyncio.create_task(_proactive_token_refresh_loop())
 
     yield
 
     # Cleanup
-    stop_reminder_scheduler()
-    scheduler_task.cancel()
     token_refresh_task.cancel()
     logger.info("Server shutting down...")
 
 
-app = FastAPI(title="CHAT HAY v2.0 — Trợ lý đọc tài liệu AI", lifespan=lifespan)
+app = FastAPI(title=f"{PRODUCT_NAME} — Trợ lý đọc tài liệu AI", lifespan=lifespan)
 app.mount("/audio", StaticFiles(directory=config.AUDIO_DIR), name="audio")
 
 HOMEPAGE_HTML = f"""<!DOCTYPE html>
@@ -889,7 +1312,7 @@ HOMEPAGE_HTML = f"""<!DOCTYPE html>
 <meta name="zalo-platform-site-verification" content="{ZALO_VERIFICATION_CODE}" />
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CHAT HAY — Trợ lý đọc tài liệu AI</title>
+<title>{PRODUCT_NAME} — Trợ lý đọc tài liệu AI</title>
 <style>
 body {{ font-family: 'Segoe UI', sans-serif; background: #0a0e1a; color: #f0f0f5; display: flex; justify-content: center; padding: 40px; }}
 .container {{ max-width: 600px; text-align: center; }}
@@ -900,14 +1323,14 @@ h1 {{ background: linear-gradient(135deg, #6c5ce7, #00cec9); -webkit-background-
 </head>
 <body>
 <div class="container">
-<h1>📖 CHAT HAY v2.0</h1>
-<p>Trợ lý đọc tài liệu AI trên Zalo</p>
+<h1>📖 {PRODUCT_NAME}</h1>
+<p>Trợ lý AI đọc hiểu và tóm tắt tài liệu</p>
 <p class="status">● Server đang hoạt động</p>
 <div>
+<span class="badge">📸 Ảnh → Tóm tắt</span>
 <span class="badge">📄 PDF/Word</span>
-<span class="badge">🖼️ OCR ảnh</span>
 <span class="badge">🔊 Audio TTS</span>
-<span class="badge">🏷️ Phân loại tài liệu</span>
+<span class="badge">📋 OCR</span>
 </div>
 <p style="margin-top:20px;color:#8892b0;font-size:13px;">
 App ID: {ZALO_APP_ID}<br>
@@ -942,23 +1365,23 @@ async def zalo_verifier():
 
 @app.get("/webhook/zalo")
 async def webhook_verify():
-    return JSONResponse(content={"status": "ok", "message": "CHAT HAY v2.0 webhook active"}, status_code=200)
+    return JSONResponse(content={"status": "ok", "message": f"{PRODUCT_NAME} webhook active"}, status_code=200)
 
 
 @app.get("/debug/tokens")
-async def debug_tokens():
+async def debug_tokens(request: Request):
     """Endpoint debug: xem trạng thái token hiện tại."""
+    supplied_secret = request.headers.get("x-debug-secret", "") or request.query_params.get("secret", "")
+    if not config.DEBUG_ADMIN_SECRET or supplied_secret != config.DEBUG_ADMIN_SECRET:
+        raise HTTPException(status_code=404, detail="Not found")
     info = get_token_info()
     info["memory_access_token_len"] = len(ZALO_OA_ACCESS_TOKEN)
-    info["memory_access_token_tail"] = ZALO_OA_ACCESS_TOKEN[-8:] if len(ZALO_OA_ACCESS_TOKEN) > 8 else "***"
     info["memory_refresh_token_len"] = len(ZALO_REFRESH_TOKEN)
-    info["memory_refresh_token_tail"] = ZALO_REFRESH_TOKEN[-8:] if len(ZALO_REFRESH_TOKEN) > 8 else "***"
     # So sánh env vs memory để biết token đang dùng từ nguồn nào
     env_refresh = os.getenv("ZALO_REFRESH_TOKEN", "")
-    info["env_refresh_token_tail"] = env_refresh[-8:] if len(env_refresh) > 8 else "***"
     info["token_source"] = "DB" if ZALO_REFRESH_TOKEN != env_refresh else "ENV"
-    info["version"] = "3.0"
-    info["features"] = ["ocr", "doc_classification", "tts", "proactive_refresh"]
+    info["version"] = "2.0-core"
+    info["features"] = ["summarization", "ocr", "doc_classification", "tts"]
     return JSONResponse(content=info, status_code=200)
 
 
@@ -1047,7 +1470,7 @@ async def api_summarize(file: UploadFile = File(...)):
 
     except Exception as exc:
         logger.error("API summarize error: %s", exc, exc_info=True)
-        return JSONResponse(content={"error": "Đã xảy ra lỗi. Vui lòng thử lại!"}, status_code=500)
+        return JSONResponse(content={"error": "Đã xảy ra lỗi. V vui lòng thử lại!"}, status_code=500)
 
 
 @app.post("/api/summarize-view", response_class=HTMLResponse)
@@ -1186,29 +1609,23 @@ async def process_webhook_event(body: dict):
                 return  # Skip processing this event silently to save server loads
             user_cooldowns[sender_id] = now
 
-        # Ghi nhận tương tác → refresh cửa sổ 7 ngày cho deadline reminder
-        if sender_id:
-            update_user_interaction(sender_id)
+
 
         if event_name == "follow":
             await send_text_message(sender_id, get_welcome_message())
             return
 
         if event_name == "user_send_text":
-            # Gửi nhắc nhở deadline tích lũy khi user quay lại
-            await _send_pending_deadline_notifications(sender_id)
             await handle_zalo_text(sender_id, body.get("message", {}).get("text", ""))
             return
 
         if event_name == "user_send_image":
-            await _send_pending_deadline_notifications(sender_id)
             attachments = body.get("message", {}).get("attachments", [])
             if attachments:
                 await handle_zalo_image(sender_id, attachments[0].get("payload", {}).get("url", ""))
             return
 
         if event_name == "user_send_file":
-            await _send_pending_deadline_notifications(sender_id)
             attachments = body.get("message", {}).get("attachments", [])
             if attachments:
                 payload = attachments[0].get("payload", {})
@@ -1224,22 +1641,6 @@ async def process_webhook_event(body: dict):
     except Exception as exc:
         logger.error("Error processing event: %s", exc, exc_info=True)
 
-
-async def _send_pending_deadline_notifications(user_id: str):
-    """Gửi nhắc nhở deadline tích lũy khi user quay lại tương tác."""
-    try:
-        pending = get_pending_notifications(user_id)
-        if not pending:
-            return
-
-        from services.deadline_service import format_reminder_message, mark_reminder_sent
-        for dl in pending[:3]:  # Tối đa 3 nhắc nhở cùng lúc
-            msg = format_reminder_message(dl, "today")
-            await send_text_message(user_id, msg)
-            mark_reminder_sent(user_id, dl, "today")
-            await asyncio.sleep(0.5)
-    except Exception as exc:
-        logger.error("Pending deadline notification error: %s", exc)
 
 
 @app.post("/webhook/zalo")
@@ -1275,28 +1676,11 @@ async def handle_zalo_text(user_id: str, text: str):
         action = pending["action"]
         data = pending["data"]
 
-        # User xác nhận lưu mật khẩu
-        if action == "confirm_save_vault":
-            if normalized in {"lưu", "luu", "có", "co", "save", "lưu lại", "luu lai"}:
-                save_vault_credential(
-                    user_id,
-                    data.get("app_name", "Không rõ"),
-                    data.get("url", ""),
-                    data.get("username", ""),
-                    data.get("password", ""),
-                )
-                clear_pending_action(user_id)
-                app_name = data.get("app_name", "hệ thống")
-                await send_text_message(
-                    user_id,
-                    f"✅ Đã lưu mã hóa thành công!\n"
-                    f"Lần sau nhắn 'mật khẩu {app_name}' để xem lại nhé. "
-                    f"Chỉ bạn mới thấy được."
-                )
-                return
-            elif normalized in {"không", "khong", "không cần", "khong can", "thôi", "thoi", "no"}:
-                clear_pending_action(user_id)
-                return
+        # ── Q&A SESSION: User đang hỏi về tài liệu ──
+        if action == "qa_session":
+            clear_pending_action(user_id)
+            await handle_qa_session(user_id, text)
+            return
 
         # Hidden Feature: User nhắn tìm tên/tài khoản
         if action in {"ask_name_for_task", "ask_name_for_account"}:
@@ -1343,27 +1727,124 @@ async def handle_zalo_text(user_id: str, text: str):
                         await send_text_message(user_id, result.get("overview", "Không tìm thấy thông tin."))
                 return
 
-    # Lệnh tương tác (menu, số, nghe, chi tiết, vault...)
+    # Lệnh tương tác (menu, số, nghe, chi tiết...)
     if await handle_interactive_command(user_id, normalized):
         return
 
-    # ── SMART REDIRECT: Hướng dẫn mềm mại khi user nhắn linh tinh ──
-    # Không chặn thô thiển, mà dẫn dắt user hiểu cách dùng
-    _useless_exact = {"chào", "hello", "hi", "hey", "alo", "ok", "oke", "haha", "hehe", "gì", "sao", "ơi", "ê", "yo"}
-    _useless_phrases = ["bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói", "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt"]
-    is_exact_useless = normalized in _useless_exact
-    is_phrase_useless = any(kw in normalized for kw in _useless_phrases) and len(normalized) < 60
-    if len(text.strip()) < 15 or is_exact_useless or is_phrase_useless:
-        await send_text_message(
-            user_id, 
-            "👋 Chào bạn! Mình là CHAT HAY — chuyên gia đọc tài liệu bằng AI.\n\n"
-            "💡 Mình có thể giúp bạn:\n"
-            "  📎 Gửi file PDF/Word → Tóm tắt nhanh 5 ý chính\n"
-            "  🖼️ Chụp ảnh hợp đồng/hóa đơn → Đọc và phân tích\n"
-            "  ⏰ Phát hiện deadline → Tự nhắc nhở đúng hạn\n"
-            "  🔒 Lưu mật khẩu → Kho bí mật an toàn\n\n"
-            "Thử gửi 1 tấm ảnh hoặc file cho mình xem nhé! 😊"
-        )
+    # ═══════════════════════════════════════════════════════════════
+    # STUDY MODE: Quiz & Flashcard
+    # ═══════════════════════════════════════════════════════════════
+
+    # ── Check for active study session ──
+    session_record = load_study_session(user_id)
+    if session_record:
+        session_type = session_record["session_type"]
+        session_data = session_record["data"]
+
+        if session_type == "quiz":
+            # Continuing quiz session
+            await handle_quiz_answer(user_id, normalized, session_data)
+            return
+        elif session_type == "flashcard":
+            # Continuing flashcard session
+            await handle_flashcard_action(user_id, normalized, session_data)
+            return
+
+    # ── Start new study session ──
+    # Commands: quiz, flashcards, luyện tập, ôn tập
+    study_keywords = {"quiz", "quizz", "câu hỏi", "trắc nghiệm", "luyện tập", "ôn tập", "flashcard", "thẻ", "cards"}
+    if any(kw in normalized for kw in study_keywords):
+        # Check if user has active document
+        active_doc = get_active_doc_id(user_id)
+        if not active_doc:
+            await send_text_message(
+                user_id,
+                "⚠️ Bạn chưa gửi tài liệu nào để luyện tập.\n\n"
+                "Gửi ảnh hoặc file PDF/Word trước nhé! 📚"
+            )
+            return
+
+        # Get document text for context
+        doc_text = get_document_text_temp(user_id, active_doc)
+        if not doc_text:
+            await send_text_message(
+                user_id,
+                "⚠️ Tài liệu đã hết hạn hoặc không tìm thấy.\n\n"
+                "Vui lòng gửi lại tài liệu để bắt đầu ôn tập nhé!"
+            )
+            return
+
+        # Check premium (if needed) —暂时 free for now
+        # if not check_study_premium(user_id):
+        #     await send_study_premium_upsell(user_id)
+        #     return
+
+        # Detect mode should already be STUDY_MATERIAL from earlier processing
+        # But we can re-check quickly
+        await start_quiz_session(user_id, doc_text)
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # END STUDY MODE
+    # ═══════════════════════════════════════════════════════════════
+
+    # Lệnh tương tác (menu, số, nghe, chi tiết...)
+    if await handle_interactive_command(user_id, normalized):
+        return
+
+    # ── SMART REDIRECT: 3 CASE riêng biệt + random pool chống nhàm chán ──
+    _greeting_words = {"chào", "hello", "hi", "hey", "alo", "ok", "oke", "yo", "xin chào"}
+    _useless_words = {"haha", "hehe", "hihi", "gì", "sao", "ơi", "ê", "ơ", "ừ", "ok", "oke"}
+    _chatgpt_phrases = ["bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói",
+                        "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt",
+                        "hỏi đáp", "trả lời câu hỏi", "giải bài", "làm bài"]
+    _question_markers = ["tại sao", "vì sao", "như thế nào", "là gì", "có phải", "bao nhiêu",
+                         "ở đâu", "khi nào", "ai là", "giải thích", "cho hỏi", "hỏi"]
+
+    is_greeting = normalized in _greeting_words
+    is_chatgpt = any(kw in normalized for kw in _chatgpt_phrases) and len(normalized) < 80
+    is_question = (any(kw in normalized for kw in _question_markers) and len(normalized) > 15
+                   and not normalized.startswith(("tim ", "tìm ")))
+    is_useless = normalized in _useless_words or len(text.strip()) < 5
+
+    # ═══ CASE A: Greeting — thân thiện, CTA ngắn ═══
+    if is_greeting:
+        greetings = [
+            "👋 Hey! Gửi 1 tấm ảnh tài liệu bất kỳ — mình đọc và tóm tắt trong 15 giây! 📸",
+            "📸 Chào bạn! Chụp ảnh slide, bài giảng, hóa đơn hay giấy tờ gì cần đọc gửi mình nhé!",
+            "👋 Hi! Mình đọc tài liệu giỏi lắm — thử gửi 1 ảnh hoặc file xem! 📎",
+            f"👋 Chào! Mình là {PRODUCT_NAME}. Gửi ảnh hoặc file tài liệu — mình tóm tắt ngay! ⚡",
+        ]
+        await send_text_message(user_id, random.choice(greetings))
+        return
+
+    # ═══ CASE B: Câu hỏi kiến thức / tưởng ChatGPT ═══
+    if is_chatgpt or is_question:
+        knowledge_redirects = [
+            (
+                "🤔 Câu hỏi hay! Nhưng mình chuyên đọc tài liệu, không phải chatbot hỏi đáp.\n\n"
+                "📸 Thử chụp ảnh bài giảng, sách, hóa đơn hay giấy tờ nào cần tóm tắt gửi mình — mình đọc nhanh lắm!"
+            ),
+            (
+                "😊 Mình không trả lời câu hỏi được, nhưng mình ĐỌC TÀI LIỆU cực giỏi!\n\n"
+                "📎 Gửi ảnh hoặc file PDF/Word bất kỳ — mình tóm tắt trong 15 giây!"
+            ),
+            (
+                "📖 Mình là trợ lý ĐỌC TÀI LIỆU, không phải chatbot trả lời câu hỏi nhé!\n\n"
+                "Thử chụp ảnh tài liệu bất kỳ gửi mình — slide, sách, hợp đồng, hóa đơn... gì cũng được! 📸"
+            ),
+        ]
+        await send_text_message(user_id, random.choice(knowledge_redirects))
+        return
+
+    # ═══ CASE C: Text ngắn / linh tinh / sticker text ═══
+    if is_useless or len(text.strip()) < 15:
+        useless_redirects = [
+            "📎 Mình đọc tài liệu giỏi lắm nhé! Thử chụp ảnh slide, sách, hoặc giấy tờ gửi mình xem 📸",
+            "📸 Gửi ảnh hoặc file tài liệu cho mình — mình tóm tắt trong 15 giây! ⚡",
+            f"📖 Mình là {PRODUCT_NAME} — chuyên đọc tài liệu! Gửi ảnh hoặc file thử nhé 📎",
+        ]
+        await send_text_message(user_id, random.choice(useless_redirects))
         return
 
     # Text dài → tóm tắt AI
@@ -1381,7 +1862,14 @@ async def handle_zalo_text(user_id: str, text: str):
         return
 
     remember_summary(user_id, "văn bản bạn vừa gửi", structured)
-    await send_summary_with_interactive_buttons(user_id, "văn bản bạn vừa gửi", structured)
+    # Lưu text gốc cho Q&A (TTL 24h)
+    doc_id = str(uuid.uuid4().hex[:12])
+    save_document_text_temp(user_id, doc_id, text, ttl_hours=24)
+    # Set active doc để Q&A hoạt động
+    set_active_doc(user_id, doc_id)
+    # Reset Q&A counter cho document mới
+    reset_qa_count(user_id, doc_id)
+    await send_summary_with_qa_buttons(user_id, "văn bản bạn vừa gửi", structured)
     increment_usage(user_id)
 
 
@@ -1406,7 +1894,16 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
     if get_file_type(file_name) == "unknown":
         await send_text_message(
             user_id,
-            "Mình chỉ hỗ trợ file PDF, Word (.docx), hoặc ảnh. Vui lòng gửi đúng định dạng!"
+            "Mình chỉ hỗ trợ file PDF, Word (.docx), Excel (.xlsx), hoặc ảnh. Vui lòng gửi đúng định dạng!"
+        )
+        return
+
+    # Check for .xls legacy (Excel 2003) — require .xlsx
+    if get_file_type(file_name) == "xls_legacy":
+        await send_text_message(
+            user_id,
+            "📊 File .xls (Excel cũ) — mình cần file .xlsx nhé!\n\n"
+            "Mở file → Save As → chọn .xlsx → gửi lại 😊"
         )
         return
 
@@ -1442,16 +1939,19 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
                     return
 
                 remember_summary(user_id, file_name, structured)
+                # Lưu text gốc từ PDF scan (text từ OCR) — TTL 24h
+                # Lưu ý: PDF scan không có raw text, lưu empty string hoặc OCR text nếu có
+                doc_id = str(uuid.uuid4().hex[:12])
+                # Vì PDF scan không có text, ta lưu placeholder để track doc existence
+                save_document_text_temp(user_id, doc_id, "", ttl_hours=24)
+                # Set active doc để Q&A hoạt động (dù không có raw text, vẫn có thể hỏi về summary)
+                set_active_doc(user_id, doc_id)
+                # Reset Q&A counter cho document mới
+                reset_qa_count(user_id, doc_id)
                 await send_summary_with_interactive_buttons(
                     user_id, file_name, structured, time.time() - start_time
                 )
                 increment_usage(user_id)
-
-                # Auto deadline extraction
-                deadline_count = save_deadlines_from_summary(user_id, structured, doc_title=file_name)
-                if deadline_count > 0:
-                    await send_text_message(user_id, format_deadline_saved_notice(deadline_count))
-                update_user_interaction(user_id)
                 return
             finally:
                 # Cleanup temporary page images
@@ -1473,7 +1973,6 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
             await send_text_message(user_id, str(structured["error"]))
             return
 
-        doc_type = structured.get("document_type", "general")
         recommended_action = structured.get("recommended_action", "standard_summary")
 
         # ── SILENT STATE: AI nhận diện ý định tiềm ẩn ──
@@ -1490,17 +1989,16 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
                 "text": text[:10000],
             })
 
-        # Xử lý tóm tắt bình thường, không nói hoạch toẹt ra là mình đang săm soi
         remember_summary(user_id, file_name, structured)
-        await send_summary_with_interactive_buttons(user_id, file_name, structured, time.time() - start_time)
+        # Lưu text gốc cho Q&A (TTL 24h)
+        doc_id = str(uuid.uuid4().hex[:12])
+        save_document_text_temp(user_id, doc_id, text, ttl_hours=24)
+        # Set active doc để Q&A hoạt động
+        set_active_doc(user_id, doc_id)
+        # Reset Q&A counter cho document mới
+        reset_qa_count(user_id, doc_id)
+        await send_summary_with_qa_buttons(user_id, file_name, structured, time.time() - start_time)
         increment_usage(user_id)
-
-        # ── AUTO DEADLINE: Trích xuất và lưu deadlines ──
-        deadline_count = save_deadlines_from_summary(user_id, structured, doc_title=file_name)
-        if deadline_count > 0:
-            notice = format_deadline_saved_notice(deadline_count, structured.get("deadlines", []))
-            if notice:
-                await send_text_message(user_id, notice)
     except Exception as exc:
         logger.error("File processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Đã xảy ra lỗi. Vui lòng thử lại!")
@@ -1510,7 +2008,7 @@ async def handle_zalo_file(user_id: str, file_url: str, file_name: str, file_siz
 
 
 async def handle_zalo_image(user_id: str, image_url: str):
-    """Xử lý ảnh từ user — smart flow: phát hiện mật khẩu, tóm tắt + nút trích xuất chữ."""
+    """Xử lý ảnh từ user — tóm tắt + nút trích xuất chữ."""
     if not check_rate_limit(user_id):
         await send_text_message(
             user_id,
@@ -1534,94 +2032,39 @@ async def handle_zalo_image(user_id: str, image_url: str):
             with open(image_path, "wb") as image_file:
                 image_file.write(response.content)
 
-        # ── AI Summary (phân loại tài liệu + phát hiện mật khẩu) ──
+        # ── AI Summary ──
         structured = await summarize_image_structured(image_path)
         if structured.get("error"):
             await send_text_message(user_id, str(structured["error"]))
             return
 
         doc_type = structured.get("document_type", "general")
-        recommended_action = structured.get("recommended_action", "standard_summary")
-        credentials = structured.get("credentials")
 
-        # ═══ ẢNH THƯỜNG: Hướng dẫn nhẹ nhàng ═══
+        # ═══ ẢNH THƯỜNG: Redirect ═══
         if doc_type == "photo":
-            await send_text_message(
-                user_id, 
-                "🖼️ Ảnh đẹp quá! Nhưng mình sẽ phát huy tốt hơn với tài liệu nhé 😊\n\n"
-                "Hãy thử gửi cho mình:\n"
-                "  📎 Hợp đồng, công văn, quyết định\n"
-                "  🧳 Hóa đơn, biên lai\n"
-                "  💊 Đơn thuốc, phiếu xét nghiệm\n"
-                "  📝 Bảng điểm, thông báo trường học\n\n"
-                "Mình sẽ tóm tắt, trích xuất deadline và nhắc nhở bạn đúng hạn!"
-            )
-            # Không cần refund vì increment_usage chưa được gọi ở thời điểm này
+            photo_redirects = [
+                (
+                    "📷 Ảnh này không phải tài liệu rồi!\n\n"
+                    "Mình chuyên đọc:\n"
+                    "• 📚 Bài giảng, slide → Tóm tắt nhanh\n"
+                    "• 📄 Hợp đồng, công văn → Phân tích chi tiết\n"
+                    "• 🧾 Hóa đơn → Kiểm tra số liệu\n\n"
+                    "📸 Chụp ảnh tài liệu gửi thử nhé!"
+                ),
+                (
+                    "🖼️ Ảnh đẹp! Nhưng mình đọc TÀI LIỆU mới giỏi 😄\n\n"
+                    "Thử chụp ảnh slide bài giảng, sách, hóa đơn, hoặc giấy tờ bất kỳ gửi mình — tóm tắt trong 15 giây! ⚡"
+                ),
+                (
+                    "📷 Mình cần ảnh TÀI LIỆU nhé — không phải ảnh chụp thông thường!\n\n"
+                    "Ví dụ: slide PowerPoint, trang sách, hóa đơn, hợp đồng, công văn...\n"
+                    "📸 Gửi thử 1 tấm xem mình phân tích!"
+                ),
+            ]
+            await send_text_message(user_id, random.choice(photo_redirects))
             return
 
-        # ═══ NHÁNH Y TẾ: ĐƠN THUỐC — warning y tế ═══
-        if doc_type == "medical" and recommended_action == "medical_warning":
-            remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
-            text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
-            text_msg += "\n\n⚠️ Lưu ý: Đây là giải thích AI, KHÔNG thay thế lời khuyên bác sĩ. Bạn hãy hỏi lại bác sĩ điều trị nếu có thắc mắc nhé!"
-            buttons = build_summary_buttons(structured)
-            if len(buttons) < ZALO_MAX_BUTTONS:
-                buttons.append({
-                    "title": "📋 Trích xuất chữ",
-                    "type": "oa.query.show",
-                    "payload": "TRICH XUAT",
-                })
-            await send_long_text_message(user_id, text_msg, buttons)
-            increment_usage(user_id)
-
-            # ── AUTO DEADLINE từ ảnh y tế ──
-            dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh y tế")
-            if dl_count > 0:
-                notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
-                if notice:
-                    await send_text_message(user_id, notice)
-            return
-
-        # ═══ TÍNH NĂNG ẨN: PHÁT HIỆN MẬT KHẨU HOẶC DANH SÁCH ═══
-        if recommended_action in {"ask_to_save_vault", "ask_name_for_account", "ask_name_for_task"}:
-            
-            # Ghi nhớ action nhưng im lặng
-            if recommended_action == "ask_to_save_vault" and credentials:
-                set_pending_action(user_id, "confirm_save_vault", {
-                    "app_name": credentials.get("app_name", "hệ thống"),
-                    "url": credentials.get("url", ""),
-                    "username": credentials.get("username", ""),
-                    "password": credentials.get("password", ""),
-                })
-            else:
-                ocr_text = await extract_ocr_text(image_path)
-                set_pending_action(user_id, recommended_action, {
-                    "file_name": "ảnh chụp",
-                    "text": ocr_text[:10000],
-                })
-
-            # Tóm tắt trả ra bình thường như không có gì xảy ra
-            remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
-            text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
-            buttons = build_summary_buttons(structured)
-            if len(buttons) < ZALO_MAX_BUTTONS:
-                buttons.append({
-                    "title": "📋 Trích xuất chữ",
-                    "type": "oa.query.show",
-                    "payload": "TRICH XUAT",
-                })
-            await send_long_text_message(user_id, text_msg, buttons)
-            increment_usage(user_id)
-
-            # ── AUTO DEADLINE từ ảnh phát hiện ẩn ──
-            dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh bạn vừa gửi")
-            if dl_count > 0:
-                notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
-                if notice:
-                    await send_text_message(user_id, notice)
-            return
-
-        # ═══ NHÁNH 3: MẶC ĐỊNH — Tóm tắt thông thường ═══
+        # ═══ TÓM TẮT THÔNG THƯỜNG ═══
         remember_summary(user_id, "ảnh bạn vừa gửi", structured, image_url=image_url)
 
         text_msg = format_summary_menu("ảnh bạn vừa gửi", structured, time.time() - start_time)
@@ -1633,15 +2076,8 @@ async def handle_zalo_image(user_id: str, image_url: str):
                 "payload": "TRICH XUAT",
             })
         await send_long_text_message(user_id, text_msg, buttons)
-
         increment_usage(user_id)
 
-        # ── AUTO DEADLINE từ ảnh thường ──
-        dl_count = save_deadlines_from_summary(user_id, structured, doc_title="ảnh bạn vừa gửi")
-        if dl_count > 0:
-            notice = format_deadline_saved_notice(dl_count, structured.get("deadlines", []))
-            if notice:
-                await send_text_message(user_id, notice)
     except Exception as exc:
         logger.error("Image processing error: %s", exc, exc_info=True)
         await send_text_message(user_id, "Không đọc được ảnh. Chụp rõ hơn và thử lại!")
@@ -1651,13 +2087,382 @@ async def handle_zalo_image(user_id: str, image_url: str):
 
 
 # ═══════════════════════════════════════════════════════════════
+# STUDY MODE: Quiz & Flashcard Handlers
+# ═══════════════════════════════════════════════════════════════
+
+async def start_quiz_session(user_id: str, doc_text: str):
+    """Bắt đầu quiz session từ document text."""
+    try:
+        increment_sessions_started()  # Track session start
+
+        # Check premium limit
+        if not check_study_mode_limit(user_id):
+            # Premium gating: user đã hết free sessions
+            used = get_study_mode_count_today(user_id)
+            await send_text_message(
+                user_id,
+                f"⚠️ Bạn đã sử dụng hết {used}/{config.FREE_STUDY_SESSIONS_PER_DAY} lần luyện tập miễn phí hôm nay.\n\n"
+                "🎯 Đăng ký Premium để học tập không giới hạn:\n"
+                "• ❤️‍🔥 Quiz & Flashcard không giới hạn\n"
+                "• 📚 Tài liệu cao cấp\n"
+                "• 🚀 Ưu tiên AI tốc độ cao\n\n"
+                "👉 Nhắn 'PREMIUM' để biết thêm chi tiết!"
+            )
+            return
+
+        # Increment usage
+        increment_study_mode_usage(user_id)
+
+        # Gọi Gemini để tạo quiz questions
+        prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
+        quiz_json_str = await _call_with_smart_routing(
+            prompt,
+            text_length=len(doc_text),
+            max_tokens=8192,
+            response_json=True,
+            force_gemini=False,
+        )
+
+        # Parse JSON
+        quiz_data = json.loads(quiz_json_str)
+        questions = quiz_data.get("questions", [])
+
+        if not questions:
+            await send_text_message(user_id, "❌ Không thể tạo quiz từ tài liệu này. Tài liệu có thể không chứa nội dung trắc nghiệm.")
+            return
+
+        # Tạo QuizSession
+        session = QuizSession(
+            questions=questions,
+            doc_id=get_active_doc(user_id) or "unknown",
+        )
+        session.start()
+
+        # Lưu session vào DB
+        save_study_session(user_id, session.doc_id, "quiz", session.to_dict())
+
+        # Gửi câu hỏi đầu tiên
+        await send_quiz_question(user_id, session)
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Quiz generation JSON parse error: {e}")
+        await send_text_message(user_id, "❌ Lỗi khi tạo quiz. Vui lòng thử lại!")
+    except Exception as e:
+        logger.error(f"Start quiz session error: {e}")
+        await send_text_message(user_id, "❌ Lỗi khi bắt đầu quiz. Vui lòng thử lại!")
+
+
+async def send_quiz_question(user_id: str, session: QuizSession):
+    """Gửi câu hỏi quiz hiện tại với buttons."""
+    text = session.format_question()
+    buttons = session.get_buttons()
+
+    # Thêm nút thoát/ xem điểm
+    abort_buttons = session.get_abort_buttons()
+    if len(buttons) + len(abort_buttons) <= 5:
+        buttons.extend(abort_buttons)
+    else:
+        # Nếu vượt quá 5 nút, chỉ giữ 4 answer + 1 exit
+        buttons = buttons[:4]
+        buttons.append({
+            "title": "⏹️ Thoát",
+            "type": "oa.query.show",
+            "payload": "QUIZ_EXIT",
+        })
+
+    await send_long_text_message(user_id, text, buttons)
+
+
+async def handle_quiz_answer(user_id: str, user_input: str, session_data: dict):
+    """Xử lý câu trả lời quiz từ user."""
+    try:
+        # Restore session
+        session = QuizSession.from_dict(session_data)
+
+        # Check if user wants to exit or check score
+        normalized = user_input.strip().upper()
+        if normalized == "THOÁT" or normalized == "QUIZ_EXIT":
+            clear_study_session(user_id)
+            final = session.get_final_score()
+            score_text = (
+                f"📊 **Kết quả quiz**\n\n"
+                f"✅ Đúng: {final['correct']}/{final['total']}\n"
+                f"📈 Điểm: {final['percentage']:.1f}%\n"
+                f"🏅 Đánh giá: {final['grade']}\n"
+                f"🔥 Chuỗi đúng: {final['streak']}"
+            )
+            if "time_seconds" in final:
+                score_text += f"\n⏱️ Thời gian: {final['time_seconds']} giây"
+            await send_text_message(user_id, score_text)
+            return
+
+        if normalized == "XEM ĐIỂM" or normalized == "QUIZ_SCORE":
+            current_score = f"📈 Tiến độ hiện tại:\n✅ Đúng: {session.score}/{session.current_idx}\n🔥 Chuỗi: {session.streak}"
+            await send_text_message(user_id, current_score)
+            # Không tiếp tục xử lý, giữ session sống
+            return
+
+        # Process answer (A/B/C/D)
+        if normalized not in {"A", "B", "C", "D"}:
+            await send_text_message(user_id, "⚠️ Vui lòng trả lời A, B, C, hoặc D. Hoặc bấm nút bên dưới!")
+            return
+
+        result = session.process_answer(normalized)
+
+        # Feedback
+        feedback = f"{result['feedback_text']}\n"
+        if result['explanation']:
+            feedback += f"\n💡 Giải thích: {result['explanation']}"
+
+        await send_text_message(user_id, feedback)
+
+        # Next question or finish
+        if result['is_last']:
+            # Quiz completed
+            clear_study_session(user_id)
+            final = session.get_final_score()
+            # Record analytics
+            record_quiz_completion(
+                user_id=user_id,
+                score=final['correct'],
+                total=final['total'],
+                time_seconds=final.get('time_seconds', 0)
+            )
+            score_text = (
+                f"🎉 **Hoàn thành quiz!**\n\n"
+                f"✅ Đúng: {final['correct']}/{final['total']}\n"
+                f"📈 Điểm: {final['percentage']:.1f}%\n"
+                f"🏅 Đánh giá: {final['grade']}\n"
+                f"🔥 Chuỗi đúng cao nhất: {final['streak']}"
+            )
+            if "time_seconds" in final:
+                score_text += f"\n⏱️ Thời gian: {time_to_readable(final['time_seconds'])}"
+
+            buttons = [
+                {"title": "🔄 Làm lại", "type": "oa.query.show", "payload": "STUDY_START_QUIZ"},
+                {"title": "📊 Tiến độ", "type": "oa.query.show", "payload": "STUDY_PROGRESS"},
+                {"title": "🔙 Menu", "type": "oa.query.show", "payload": "MENU"},
+            ]
+            await send_long_text_message(user_id, score_text, buttons)
+        else:
+            # Save updated session and send next question
+            save_study_session(user_id, session.doc_id, "quiz", session.to_dict())
+            await send_quiz_question(user_id, session)
+
+    except Exception as e:
+        logger.error(f"Handle quiz answer error: {e}")
+        await send_text_message(user_id, "❌ Lỗi xử lý câu trả lời. Vui lòng thử lại!")
+
+
+async def start_flashcard_session(user_id: str, doc_text: str):
+    """Bắt đầu flashcard session từ document text."""
+    try:
+        increment_sessions_started()  # Track session start
+
+        # Check premium limit
+        if not check_study_mode_limit(user_id):
+            # Premium gating: user đã hết free sessions
+            used = get_study_mode_count_today(user_id)
+            await send_text_message(
+                user_id,
+                f"⚠️ Bạn đã sử dụng hết {used}/{config.FREE_STUDY_SESSIONS_PER_DAY} lần luyện tập miễn phí hôm nay.\n\n"
+                "🎯 Đăng ký Premium để học tập không giới hạn:\n"
+                "• ❤️‍🔥 Quiz & Flashcard không giới hạn\n"
+                "• 📚 Tài liệu cao cấp\n"
+                "• 🚀 Ưu tiên AI tốc độ cao\n\n"
+                "👉 Nhắn 'PREMIUM' để biết thêm chi tiết!"
+            )
+            return
+
+        # Increment usage
+        increment_study_mode_usage(user_id)
+
+        # Gọi Gemini để tạo flashcards
+        prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
+        flashcard_json_str = await _call_with_smart_routing(
+            prompt,
+            text_length=len(doc_text),
+            max_tokens=8192,
+            response_json=True,
+            force_gemini=False,
+        )
+
+        flashcard_data = json.loads(flashcard_json_str)
+        flashcards = flashcard_data.get("flashcards", [])
+
+        if not flashcards:
+            await send_text_message(user_id, "❌ Không thể tạo flashcard từ tài liệu này.")
+            return
+
+        # Tạo FlashcardSession
+        session = FlashcardSession(
+            flashcards=flashcards,
+            doc_id=get_active_doc(user_id) or "unknown",
+        )
+
+        # Lưu session
+        save_study_session(user_id, session.doc_id, "flashcard", session.to_dict())
+
+        # Gửi card đầu tiên
+        await send_flashcard_front(user_id, session)
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Flashcard generation JSON parse error: {e}")
+        await send_text_message(user_id, "❌ Lỗi khi tạo flashcard. Vui lòng thử lại!")
+    except Exception as e:
+        logger.error(f"Start flashcard session error: {e}")
+        await send_text_message(user_id, "❌ Lỗi khi bắt đầu flashcard. Vui lòng thử lại!")
+
+
+async def send_flashcard_front(user_id: str, session: FlashcardSession):
+    """Gửi mặt trước flashcard với nút Lật."""
+    text = session.format_card_front()
+    buttons = session.get_front_buttons()
+    await send_long_text_message(user_id, text, buttons)
+
+
+async def send_flashcard_back(user_id: str, session: FlashcardSession):
+    """Gửi mặt sau flashcard với nút Nhớ/Chưa nhớ."""
+    text = session.format_card_back()
+    buttons = session.get_back_buttons()
+    await send_long_text_message(user_id, text, buttons)
+
+
+async def handle_flashcard_action(user_id: str, user_input: str, session_data: dict):
+    """Xử lý actions trong flashcard session."""
+    try:
+        session = FlashcardSession.from_dict(session_data)
+        normalized = user_input.strip().upper()
+
+        # Map payloads to actions
+        action_map = {
+            "FC_FLIP": "flip",
+            "FC_SKIP": "skip",
+            "FC_EXIT": "exit",
+            "FC_REMEMBER": "remember",
+            "FC_FORGOT": "forgot",
+            "FC_NEXT": "next",
+        }
+
+        # Determine action
+        action = None
+        for payload, act in action_map.items():
+            if normalized == payload or (normalized == "LẤT" and act == "flip"):
+                action = act
+                break
+
+        if not action:
+            await send_text_message(user_id, "⚠️ Vui lòng bấm nút bên dưới hoặc nhắn 'LẤT', 'NHỚ', 'CHƯA NHỚ'.")
+            return
+
+        # Handle actions
+        if action == "exit":
+            clear_study_session(user_id)
+            summary = session.get_summary()
+            # Record analytics
+            record_flashcard_completion(
+                user_id=user_id,
+                cards_reviewed=summary['reviewed'],
+                remembered_count=summary['remembered']
+            )
+            summary_text = (
+                f"📊 **Kết thúc flashcard**\n\n"
+                f"🗂️ Tổng cards: {summary['total_cards']}\n"
+                f"✅ Đã xem: {summary['reviewed']}\n"
+                f"😊 Nhớ: {summary['remembered']}\n"
+                f"😅 Chưa nhớ: {summary['forgotten']}\n"
+                f"📈 Hoàn thành: {summary['completion_rate']:.1f}%"
+            )
+            await send_text_message(user_id, summary_text)
+            return
+
+        elif action == "flip":
+            # Show back side
+            await send_flashcard_back(user_id, session)
+            return
+
+        elif action == "skip":
+            # Just skip to next without recording
+            if session.next_card():
+                await send_flashcard_front(user_id, session)
+            else:
+                clear_study_session(user_id)
+                await send_text_message(user_id, "✅ Đã xem hết tất cả flashcard!")
+            return
+
+        elif action in {"remember", "forgot"}:
+            # Record review
+            remembered = (action == "remember")
+            session.record_review(remembered)  # We don't need the return value here
+
+            # Save progress
+            save_study_session(user_id, session.doc_id, "flashcard", session.to_dict())
+
+            # Feedback
+            fb = "✅ Bạn nhớ rồi! Tuyệt vời!" if remembered else "😅 Không sao, cần ôn lại sau nhé!"
+            await send_text_message(user_id, fb)
+
+            # Auto-advance to next card
+            if session.next_card():
+                await send_flashcard_front(user_id, session)
+            else:
+                clear_study_session(user_id)
+                summary = session.get_summary()
+                summary_text = (
+                    f"🎉 **Hoàn thành flashcard!**\n\n"
+                    f"🗂️ Tổng cards: {summary['total_cards']}\n"
+                    f"✅ Nhớ: {summary['remembered']}\n"
+                    f"😅 Chưa nhớ: {summary['forgotten']}\n"
+                    f"📈 Tỷ lệ nhớ: {summary['completion_rate']:.1f}%"
+                )
+                await send_long_text_message(user_id, summary_text, [
+                    {"title": "🗂️ Ôn lại", "type": "oa.query.show", "payload": "STUDY_START_FLASHCARD"},
+                    {"title": "📊 Tiến độ", "type": "oa.query.show", "payload": "STUDY_PROGRESS"},
+                    {"title": "🔙 Menu", "type": "oa.query.show", "payload": "MENU"},
+                ])
+            return
+
+        elif action == "next":
+            # Skip without recording
+            if session.next_card():
+                await send_flashcard_front(user_id, session)
+            else:
+                clear_study_session(user_id)
+                await send_text_message(user_id, "✅ Đã xem hết flashcard!")
+            return
+
+    except Exception as e:
+        logger.error(f"Handle flashcard action error: {e}")
+        await send_text_message(user_id, "❌ Lỗi xử lý. Vui lòng thử lại!")
+
+
+def get_active_doc_id(user_id: str) -> str | None:
+    """Helper lấy active doc ID."""
+    doc = get_active_doc(user_id)
+    if doc:
+        return doc.get("id") if isinstance(doc, dict) else doc
+    return None
+
+
+async def start_study_session_by_mode(user_id: str, mode: str, doc_text: str):
+    """Router bắt đầu study session theo mode."""
+    if mode == "quiz":
+        await start_quiz_session(user_id, doc_text)
+    elif mode == "flashcard":
+        await start_flashcard_session(user_id, doc_text)
+    else:
+        await send_text_message(user_id, "⚠️ Chế độ học không được hỗ trợ.")
+
+
+# ═══════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     uvicorn.run(
-        "zalo_webhook:app",
+        "zalo_webhook:zalo_webhook",
         host=config.HOST,
         port=config.PORT,
         reload=config.DEBUG,
     )
+

@@ -21,11 +21,20 @@ from typing import Any
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
+import httpx
 
 from config import config
 from prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+# Safety settings for Gemini
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+}
 
 # ═══════════════════════════════════════════════════════════════
 # LAYER 4: MULTI-KEY ROTATION
@@ -131,6 +140,7 @@ DOC_TYPE_LABELS = {
     "task_assignment": "📋 Phân công nhiệm vụ",
     "bulk_accounts": "🗂️ Danh sách tài khoản",
     "photo": "📷 Ảnh chụp",
+    "spreadsheet": "📊 Bảng tính",
     "general": "📝 Tài liệu",
 }
 
@@ -138,9 +148,9 @@ DOC_TYPE_LABELS = {
 # LAYER 3: MODEL CASCADE
 # ═══════════════════════════════════════════════════════════════
 
-MODEL_LIGHT = "gemini-2.5-flash-lite"   # Nhẹ nhất, quota riêng
-MODEL_STANDARD = "gemini-2.5-flash"      # Mạnh hơn, quota riêng
-LIGHT_THRESHOLD = 2000                   # Dưới 2000 ký tự → dùng model nhẹ
+MODEL_LIGHT = "gemini-2.5-flash"         # Dùng flash cho tất cả (chất lượng tốt, giá rẻ)
+MODEL_STANDARD = "gemini-2.5-flash"      # Model chính
+LIGHT_THRESHOLD = 0                      # Luôn dùng model standard
 
 
 def _is_quota_error(error: Exception) -> bool:
@@ -428,33 +438,20 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
         "point_count": len(normalized_points),
     }
 
-    # Giữ lại document_type từ image analysis
+    # Giữ lại document_type
     doc_type = str(data.get("document_type", "")).strip().lower()
     if doc_type and doc_type in DOC_TYPE_LABELS:
         result["document_type"] = doc_type
 
-    # Giữ lại recommended_action và credentials (Smart Bot)
-    action = str(data.get("recommended_action", "standard_summary")).strip().lower()
-    result["recommended_action"] = action
+    # Action items (việc cần làm)
+    action_items = data.get("action_items")
+    if action_items and isinstance(action_items, list):
+        result["action_items"] = [_normalize_whitespace(str(a)) for a in action_items if str(a).strip()][:4]
 
-    credentials = data.get("credentials")
-    if credentials and isinstance(credentials, dict):
-        result["credentials"] = credentials
-
-    # Giữ lại deadlines (Auto-Reminder)
-    deadlines = data.get("deadlines")
-    if deadlines and isinstance(deadlines, list):
-        valid_deadlines = []
-        for dl in deadlines:
-            if isinstance(dl, dict) and dl.get("task") and dl.get("date"):
-                valid_deadlines.append({
-                    "task": _normalize_whitespace(str(dl["task"])),
-                    "date": str(dl["date"]).strip(),
-                    "assignee": _normalize_whitespace(str(dl.get("assignee", ""))),
-                    "note": _normalize_whitespace(str(dl.get("note", ""))),
-                })
-        if valid_deadlines:
-            result["deadlines"] = valid_deadlines
+    # Suggested questions (gợi ý câu hỏi)
+    suggested_questions = data.get("suggested_questions")
+    if suggested_questions and isinstance(suggested_questions, list):
+        result["suggested_questions"] = [_normalize_whitespace(str(q)) for q in suggested_questions if str(q).strip()][:3]
 
     return result
 
@@ -464,110 +461,67 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
 # ═══════════════════════════════════════════════════════════════
 
 def _build_text_prompt(text: str, target_points: int) -> str:
-    """Prompt tóm tắt text — phân loại tài liệu + trích xuất deadline."""
+    """Prompt tóm tắt text — chất lượng cao, có action items và gợi ý câu hỏi."""
     text = _smart_truncate(text)
-    return f"""Hãy đọc kỹ toàn bộ tài liệu bên dưới và phân tích thật chi tiết. Trả về kết quả dưới dạng JSON với cấu trúc sau:
 
-{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan mô tả nội dung chính của tài liệu", "document_type": "loại tài liệu", "recommended_action": "hành động đề xuất", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu giải thích CỰC KỲ CHI TIẾT, dễ hiểu"}}]}}
+    # Detect Excel source → add specialized hint
+    excel_hint = ""
+    if "[Excel:" in text:
+        excel_hint = """
+🎯 ĐÂY LÀ DỮ LIỆU TỪ FILE EXCEL (BẢNG TÍNH):
+- Phân tích SỐ LIỆU cụ thể: tổng, trung bình, min, max, so sánh giữa các cột/hàng.
+- Nếu có nhiều sheet, so sánh dữ liệu giữa các sheet.
+- suggested_questions PHẢI là câu hỏi phân tích số liệu (tính tổng, so sánh, tìm max/min, xu hướng...).
+- Ví dụ: "Tổng doanh thu tháng nào cao nhất?", "So sánh chi phí Q1 và Q2?", "Ai có lương cao nhất?"
+"""
 
-HƯỚNG DẪN CHI TIẾT:
+    return f"""Hãy đọc kỹ toàn bộ tài liệu và phân tích thật chi tiết. Trả về JSON:
 
-📋 PHÂN LOẠI TÀI LIỆU (document_type):
-   - "password" = Thông tin đăng nhập tài khoản của 1 người
-   - "bulk_accounts" = Danh sách tài khoản/mật khẩu của NHIỀU người
-   - "task_assignment" = Quyết định phân công nhiệm vụ cho nhiều người
-   - "contract" = Hợp đồng, quy định, thỏa thuận
-   - "medical" = Tài liệu y tế, đơn thuốc, kết quả xét nghiệm
-   - "general" = Các tài liệu khác (mặc định)
+{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan ngắn gọn", "document_type": "general", "points": [{{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu cực kỳ chi tiết"}}], "action_items": ["Việc cần làm 1", "Việc cần làm 2"], "suggested_questions": ["Câu hỏi gợi ý 1?", "Câu hỏi gợi ý 2?"]}}
 
-🎯 HÀNH ĐỘNG ĐỀ XUẤT (recommended_action):
-   - "ask_to_save_vault" nếu là "password"
-   - "ask_name_for_account" nếu là "bulk_accounts"
-   - "ask_name_for_task" nếu là "task_assignment"
-   - "medical_warning" nếu là "medical"
-   - "standard_summary" cho tất cả loại khác
+QUY TẮC VIẾT:
+1. Tiếng Việt CÓ DẤU, dễ hiểu, đi thẳng vào trọng tâm.
+2. TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, tên tổ chức.
+3. CẤM nói chung chung kiểu "có nhiều quy định". PHẢI nêu cụ thể.
+4. Thuật ngữ chuyên môn → giải thích ngay trong ngoặc.
+5. "detail" PHẢI 4-8 câu, cực kỳ chi tiết với dữ kiện cụ thể.
+6. Ưu tiên: số liệu → ngày tháng → tên riêng → việc cần làm → cảnh báo.
 
-📅 DEADLINE (deadlines):
-   - Trích xuất TẤT CẢ ngày hạn, deadline, thời gian quan trọng từ tài liệu
-   - Mỗi deadline: {{"task": "mô tả công việc", "date": "YYYY-MM-DD", "assignee": "tên người (nếu có)", "note": "ghi chú"}}
-   - Ngày tháng PHẢI theo định dạng YYYY-MM-DD. Nếu chỉ có tháng/năm → dùng ngày cuối tháng
-   - Nếu không có deadline nào, để deadlines = []
-   - Ví dụ: ngày ký, ngày hiệu lực, hạn nộp, hạn báo cáo, ngày hết hạn, thời hạn thanh toán
+{excel_hint}
 
-📝 CÁC Ý CHÍNH (points) — Từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS} ý, mục tiêu {target_points} ý:
+🎯 ACTION ITEMS (action_items):
+- Rút ra 2-4 việc cụ thể người đọc CẦN LÀM sau khi đọc tài liệu này.
+- Viết ngắn gọn, bắt đầu bằng động từ: "Nộp...", "Liên hệ...", "Kiểm tra...", "Lưu ý..."
+- Nếu không có việc cần làm → ["Đọc và lưu lại để tham khảo khi cần"]
 
-   ⚠️ YÊU CẦU BẮT BUỘC VỀ VĂN PHONG:
-   - Viết bằng tiếng Việt CÓ DẤU, trong sáng, dễ hiểu.
-   - Viết như đang GIẢI THÍCH CHO NGƯỜI KHÔNG CHUYÊN — tránh thuật ngữ phức tạp.
-   - Nếu buộc phải dùng thuật ngữ → giải thích ngay trong ngoặc bằng từ đơn giản.
+❓ SUGGESTED QUESTIONS (suggested_questions):
+- Gợi ý 2-3 câu hỏi mà người đọc có thể MUỐN HỎI THÊM về tài liệu này.
+- Ví dụ: "Khoản phạt chậm thanh toán tính như thế nào?", "Thuốc này có tác dụng phụ gì?"
+- NẾU LÀ EXCEL/BẢNG TÍNH: ưu tiên câu hỏi phân tích số liệu như "Tổng doanh thu?", "Tháng nào cao nhất?", "So sánh giữa các cột?"
 
-   ⚠️ YÊU CẦU BẮT BUỘC VỀ NỘI DUNG:
-   - Mục "detail" PHẢI viết thành 1 ĐOẠN VĂN dài 4-8 câu, giải thích CỰC KỲ CHI TIẾT.
-   - TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, tên tổ chức, địa chỉ.
-   - KHÔNG ĐƯỢC nói chung chung kiểu "có nhiều quy định" hoặc "đề cập đến nhiều vấn đề".
-   - Nếu có thông tin quan trọng (số tiền, hạn chót, cảnh báo) → nêu RÕ RÀNG trong detail.
-   - Ưu tiên: số liệu → ngày tháng → tên riêng → nghĩa vụ → cảnh báo/rủi ro.
-
-   Ví dụ ĐÚNG cho "detail": "Hợp đồng có thời hạn 24 tháng, từ ngày 01/01/2026 đến 31/12/2027. Tổng giá trị hợp đồng là 500 triệu đồng, thanh toán làm 3 đợt: đợt 1 là 200 triệu khi ký, đợt 2 là 200 triệu khi hoàn thành 50%, đợt 3 là 100 triệu khi nghiệm thu. Bên B phải hoàn thành công trình trước ngày 30/06/2027, nếu trễ sẽ bị phạt 0.1% giá trị hợp đồng cho mỗi ngày chậm."
-   Ví dụ SAI: "Hợp đồng có quy định về thời hạn và thanh toán." ← QUÁ CHUNG CHUNG, KHÔNG CHẤP NHẬN.
-
+Số ý: từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS}, mục tiêu {target_points} ý.
 Chỉ trả về JSON hợp lệ.
 
-═══════════════════════════════════
-NỘI DUNG TÀI LIỆU CẦN PHÂN TÍCH:
-═══════════════════════════════════
+═════════════════════════════════
 {text}"""
 
 
 def _build_image_prompt(target_points: int = DEFAULT_IMAGE_TARGET_POINTS) -> str:
-    """Prompt tóm tắt ảnh — phân loại tài liệu + phát hiện mật khẩu + deadline."""
-    return f"""Hãy đọc kỹ nội dung trong ảnh này và phân tích thật chi tiết. Trả về kết quả dưới dạng JSON:
+    """Prompt tóm tắt ảnh — chất lượng cao."""
+    return f"""Hãy đọc kỹ nội dung trong ảnh. Trả về JSON:
 
-{{"document_title": "Chủ đề/tiêu đề của ảnh", "overview": "2-3 câu tóm tắt nội dung chính", "document_type": "loại tài liệu", "recommended_action": "hành động đề xuất", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 3-7 câu giải thích CHI TIẾT"}}]}}
+{{"document_title": "Chủ đề", "overview": "2-3 câu tóm tắt", "document_type": "loại", "points": [{{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu", "detail": "Đoạn văn 3-7 câu chi tiết"}}], "action_items": ["Việc cần làm"], "suggested_questions": ["Câu hỏi gợi ý?"]}}
 
-HƯỚNG DẪN CHI TIẾT:
+PHÂN LOẠI (document_type): photo | invoice | contract | admin | medical | education | general
 
-📋 PHÂN LOẠI ẢNH (document_type) — chọn ĐÚNG 1 loại:
-   - "password" = Ảnh chụp màn hình có thông tin đăng nhập (1 người)
-   - "bulk_accounts" = Danh sách tài khoản, mật khẩu của NHIỀU người
-   - "invoice" = Hóa đơn, biên lai, phiếu thu/chi
-   - "contract" = Hợp đồng, thỏa thuận, cam kết, phụ lục
-   - "admin" = Công văn, quyết định, thông báo cơ quan nhà nước
-   - "medical" = Đơn thuốc, kết quả xét nghiệm, giấy khám bệnh
-   - "education" = Thông báo trường học, bảng điểm, lịch học
-   - "task_assignment" = Phân công nhiệm vụ, công việc cho nhiều người
-   - "photo" = Ảnh chụp không phải tài liệu (phong cảnh, selfie, đồ vật)
-   - "general" = Tài liệu khác không thuộc các loại trên
+QUY TẮC:
+1. Tiếng Việt CÓ DẤU, đi thẳng vào trọng tâm.
+2. TRÍCH DẪN CỤ THỂ mọi con số, ngày tháng, tên riêng.
+3. CẤM nói chung chung. "detail" PHẢI 3-7 câu chi tiết.
+4. action_items: 2-3 việc cụ thể cần làm. Bắt đầu bằng động từ.
+5. suggested_questions: 2-3 câu hỏi người đọc có thể muốn hỏi thêm.
 
-🎯 HÀNH ĐỘNG ĐỀ XUẤT (recommended_action):
-   - "ask_to_save_vault" nếu là "password"
-   - "ask_name_for_account" nếu là "bulk_accounts"
-   - "ask_name_for_task" nếu là "task_assignment"
-   - "medical_warning" nếu là "medical"
-   - "standard_summary" cho tất cả loại khác
-
-🔐 THÔNG TIN ĐĂNG NHẬP (credentials):
-   - NẾU document_type là "password", trích xuất: {{"app_name": "tên hệ thống", "url": "địa chỉ trang web", "username": "tài khoản", "password": "mật khẩu"}}
-   - Nếu KHÔNG phải password → để credentials = null
-
-📅 DEADLINE (deadlines):
-   - Trích xuất TẤT CẢ ngày hạn, deadline, thời gian quan trọng
-   - Mỗi deadline: {{"task": "mô tả", "date": "YYYY-MM-DD", "assignee": "tên người", "note": "ghi chú"}}
-   - Nếu không có deadline nào → để deadlines = []
-
-📝 CÁC Ý CHÍNH (points) — Từ {MIN_SUMMARY_POINTS} đến 6 ý, mục tiêu {target_points} ý:
-
-   ⚠️ YÊU CẦU BẮT BUỘC VỀ VĂN PHONG:
-   - Viết bằng tiếng Việt CÓ DẤU, trong sáng, dễ hiểu như đang giải thích cho người thường.
-   - KHÔNG dùng thuật ngữ chuyên môn mà không giải thích.
-
-   ⚠️ YÊU CẦU BẮT BUỘC VỀ NỘI DUNG:
-   - Mục "detail" PHẢI viết thành đoạn văn 3-7 câu, giải thích CỰC KỲ CHI TIẾT.
-   - TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên riêng nhìn thấy trong ảnh.
-   - Nếu là hóa đơn/hợp đồng: trích xuất rõ số tiền, hạn chót, nghĩa vụ.
-   - Nếu là đơn thuốc: liệt kê TỪNG loại thuốc, liều lượng, cách uống cụ thể.
-   - Ưu tiên: số liệu → ngày tháng → tên riêng → cảnh báo → việc cần làm.
-
+Số ý: từ {MIN_SUMMARY_POINTS} đến 6, mục tiêu {target_points}.
 Chỉ trả về JSON hợp lệ."""
 
 
@@ -583,17 +537,77 @@ Quy tac:
 - Neu anh khong co text nao, tra ve: "(Ảnh không có văn bản)"
 """
 
+async def _call_deepseek(
+    prompt: str,
+    system_prompt: str = SYSTEM_PROMPT,
+    max_tokens: int = 8192,
+    response_json: bool = True,
+) -> str:
+    """Gọi DeepSeek V4 Flash API (OpenAI-compatible format)."""
+    
+    headers = {
+        "Authorization": f"Bearer {config.DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    
+    body = {
+        "model": config.DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    
+    if response_json:
+        body["response_format"] = {"type": "json_object"}
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{config.DEEPSEEK_BASE_URL}/v1/chat/completions",
+            headers=headers,
+            json=body,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
 
-# ═══════════════════════════════════════════════════════════════
-# CORE API CALLS
-# ═══════════════════════════════════════════════════════════════
 
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
+async def _call_with_smart_routing(
+    content,
+    text_length: int = 0,
+    max_tokens: int = 8192,
+    response_json: bool = True,
+    force_gemini: bool = False,
+) -> str:
+    """Smart routing: DeepSeek cho text, Gemini cho ảnh."""
+    
+    # ── Nếu CÓ DeepSeek key VÀ KHÔNG bắt buộc Gemini → dùng DeepSeek ──
+    if config.DEEPSEEK_API_KEY and not force_gemini:
+        try:
+            # content phải là string (text-only)
+            if isinstance(content, str):
+                result = await _call_deepseek(
+                    prompt=content,
+                    max_tokens=max_tokens,
+                    response_json=response_json,
+                )
+                logger.info("DeepSeek V4 Flash OK: %s chars", len(result))
+                return result
+        except httpx.HTTPStatusError as exc:
+            logger.error("DeepSeek API Error (HTTP %s): %s. Auto-switching to Gemini...", exc.response.status_code, exc)
+        except httpx.RequestError as exc:
+            logger.error("DeepSeek Network Error: %s. Auto-switching to Gemini...", exc)
+        except Exception as exc:
+            logger.error("DeepSeek Unexpected Error: %s. Auto-switching to Gemini...", exc)
+    
+    # ── Fallback / Ảnh: dùng Gemini (nếu DeepSeek lỗi hoặc là ảnh) ──
+    logger.info("Routing request to Gemini (Fallback/Vision)...")
+    return await _call_gemini_with_fallback(
+        content, text_length, max_tokens, response_json
+    )
+
 
 
 async def _call_gemini_with_fallback(
@@ -604,10 +618,8 @@ async def _call_gemini_with_fallback(
 ) -> str:
     """Gọi Gemini với fallback: nếu model chính 404 → thử model khác."""
     models_to_try = [
-        MODEL_LIGHT if text_length < LIGHT_THRESHOLD else MODEL_STANDARD,
-        MODEL_STANDARD,  # fallback 1
-        "gemini-1.5-flash-8b",  # fallback 2
-        "gemini-1.5-flash",  # fallback 3
+        MODEL_STANDARD,          # gemini-2.5-flash (chính)
+        "gemini-2.0-flash",      # fallback duy nhất
     ]
     # Deduplicate while preserving order
     seen = set()
@@ -618,7 +630,7 @@ async def _call_gemini_with_fallback(
             unique_models.append(m)
 
     gen_config_kwargs = {
-        "temperature": 0.3,
+        "temperature": 0.2,
         "max_output_tokens": max_tokens,
     }
     if response_json:
@@ -670,7 +682,7 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
     for attempt in range(3):
         try:
             prompt = _build_text_prompt(text, target_points)
-            response_text = await _call_gemini_with_fallback(prompt, len(text))
+            response_text = await _call_with_smart_routing(prompt, len(text))
             parsed = _extract_json(response_text)
             normalized = _normalize_points(parsed, target_points)
             logger.info(
@@ -680,6 +692,14 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
 
             # Layer 1: Store in cache
             _text_cache.put(text, normalized)
+
+            # ADDED: Detect document mode for Study Mode routing
+            from services.mode_detector import detect_mode
+            mode_result = await detect_mode(text)
+            # Normalize: "STUDY_MATERIAL" -> "education" (matches webhook buttons)
+            normalized["document_type"] = "education" if mode_result["mode"] == "STUDY_MATERIAL" else "general"
+            normalized["mode_confidence"] = mode_result["confidence"]
+
             return normalized
 
         except Exception as exc:
@@ -772,25 +792,20 @@ async def summarize_pdf_images_structured(image_paths: list[str]) -> dict[str, A
 
     target_points = min(len(image_paths) + 3, MAX_SUMMARY_POINTS)
     
-    prompt = f"""Hãy đọc kỹ TOÀN BỘ các trang tài liệu (dạng ảnh scan/chụp) bên dưới và phân tích thật chi tiết.
-Tài liệu này có {len(image_paths)} trang. Trả về kết quả dưới dạng JSON:
+    prompt = f"""Hãy đọc kỹ TOÀN BỘ các trang tài liệu (dạng ảnh scan/chụp) bên dưới.
+Tài liệu này có {len(image_paths)} trang. Trả về JSON:
 
-{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan", "document_type": "loại tài liệu", "recommended_action": "standard_summary", "credentials": null, "deadlines": [], "points": [{{"title": "Tiêu đề ngắn gọn", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu giải thích CỰC KỲ CHI TIẾT"}}]}}
+{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan ngắn gọn", "document_type": "general", "points": [{{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu", "detail": "Đoạn văn 4-8 câu cực kỳ chi tiết"}}]}}
 
-📋 PHÂN LOẠI TÀI LIỆU (document_type): invoice|contract|admin|medical|education|task_assignment|general
+QUY TẮC:
+1. Tiếng Việt CÓ DẤU, dễ hiểu, đi thẳng vào trọng tâm.
+2. TRÍCH DẪN CỤ THỂ: con số, ngày tháng, tên người, tên tổ chức.
+3. Nếu có bảng biểu → trích xuất dữ liệu cụ thể.
+4. Chữ viết tay khó đọc → ghi "(chữ viết tay khó đọc)" và đoán nghĩa.
+5. "detail" PHẢI 4-8 câu, cực kỳ chi tiết.
+6. CẤM nói chung chung.
 
-📅 DEADLINE: Trích xuất TẤT CẢ deadline, ngày hạn → {{"task": "mô tả", "date": "YYYY-MM-DD", "assignee": "tên người", "note": "ghi chú"}}
-
-📝 CÁC Ý CHÍNH: Từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS} ý, mục tiêu {target_points} ý.
-
-⚠️ LƯU Ý ĐẶC BIỆT:
-- Đây là tài liệu SCAN hoặc có CHỮ VIẾT TAY — hãy đọc cẩn thận từng trang.
-- Nếu có bảng biểu, trích xuất dữ liệu cụ thể trong bảng.
-- Nếu chữ viết tay không rõ, ghi chú "(chữ viết tay khó đọc)" và đoán nghĩa nếu có thể.
-- Viết bằng tiếng Việt CÓ DẤU, trong sáng, chi tiết.
-- TRÍCH DẪN CỤ THỂ: con số, ngày tháng, tên người, tên tổ chức.
-- "detail" PHẢI 4-8 câu, giải thích CỰC KỲ CHI TIẾT với dữ kiện cụ thể.
-
+Số ý: {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS}, mục tiêu {target_points}.
 Chỉ trả về JSON hợp lệ."""
 
     last_error_msg = ""
@@ -869,3 +884,51 @@ async def summarize_image(image_path: str) -> str:
     lines.append(f"{len(points)} ý nổi bật:")
     lines.extend(f"{point['index']}. {point['title']}: {point['detail']}" for point in points)
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Q&A: ANSWER QUESTIONS ABOUT DOCUMENTS
+# ═══════════════════════════════════════════════════════════════
+
+async def answer_question_about_document(question: str, document_text: str, doc_title: str = "tài liệu") -> str:
+    """Trả lời câu hỏi dựa trên nội dung tài liệu — chất lượng cao.
+
+    Sử dụng full document text làm context, Gemini sẽ trả lời
+    CHỈ dựa trên thông tin có trong tài liệu.
+    """
+    # Truncate smart nếu quá dài (giữ max 80K chars cho context window)
+    doc_context = _smart_truncate(document_text, max_total=80000)
+
+    prompt = f"""Bạn là trợ lý AI chuyên phân tích tài liệu. Người dùng đang hỏi về tài liệu "{doc_title}".
+
+CÂU HỎI CỦA NGƯỜI DÙNG:
+{question}
+
+NỘI DUNG TÀI LIỆU:
+{doc_context}
+
+QUY TẮC TRẢ LỜI (BẮT BUỘC):
+1. CHỈ trả lời dựa trên thông tin CÓ TRONG tài liệu. KHÔNG bịa đặt, KHÔNG thêm kiến thức ngoài.
+2. TRÍCH DẪN CỤ THỂ: nêu rõ con số, ngày tháng, tên người, điều khoản, số tiền từ tài liệu.
+3. Tiếng Việt CÓ DẤU, rõ ràng, dễ hiểu — như đang giải thích cho bạn bè.
+4. Nếu câu hỏi KHÔNG liên quan đến nội dung tài liệu → trả lời: "Tôi không tìm thấy thông tin về điều này trong tài liệu."
+5. Nếu thông tin chỉ có một phần → nêu rõ phần nào có, phần nào thiếu.
+6. Trả lời đầy đủ nhưng gọn (3-8 câu). Đừng lặp lại câu hỏi.
+7. Nếu có nhiều thông tin liên quan → tổ chức thành danh sách ngắn gọn.
+
+Trả lời:"""
+
+    try:
+        response_text = await _call_with_smart_routing(
+            prompt,
+            text_length=len(doc_context),
+            max_tokens=2048,
+            response_json=False,  # Trả về text thuần, không JSON
+        )
+        return response_text.strip() if response_text else "Không thể trả lời câu hỏi lúc này. Thử lại nhé!"
+    except Exception as exc:
+        logger.error("Q&A answer failed: %s", exc)
+        if _is_quota_error(exc):
+            return QUOTA_MESSAGE
+        return "Đã xảy ra lỗi khi phân tích. Vui lòng thử lại!"
+

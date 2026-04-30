@@ -88,6 +88,69 @@ async def parse_docx(file_path: str) -> str:
         return ""
 
 
+async def parse_xlsx(file_path: str, max_rows_per_sheet: int = 500) -> str:
+    """Extract text from Excel .xlsx — tất cả sheets, format bảng."""
+    try:
+        from openpyxl import load_workbook
+
+        # Load in read-only mode for performance
+        wb = load_workbook(file_path, data_only=True, read_only=True)
+        text_parts = []
+        total_rows = 0
+
+        for sheet in wb.worksheets:
+            # Skip hidden sheets
+            if sheet.sheet_state != 'visible':
+                logger.info(f"Skipping hidden sheet: {sheet.title}")
+                continue
+
+            sheet_name = sheet.title
+            max_row = sheet.max_row
+            max_col = sheet.max_column
+
+            if max_row == 0 or max_col == 0:
+                continue  # Skip empty sheets
+
+            # Header for this sheet
+            text_parts.append(f"\n📋 Sheet: \"{sheet_name}\" ({min(max_row, max_rows_per_sheet)} hàng × {max_col} cột)")
+            text_parts.append("─" * 60)
+
+            # Read rows
+            rows_read = 0
+            for row in sheet.iter_rows(values_only=True, max_row=max_rows_per_sheet):
+                rows_read += 1
+                # Format row: join cells with " | "
+                row_cells = []
+                for cell in row:
+                    if cell is None:
+                        cell_text = ""
+                    else:
+                        cell_text = str(cell).strip()
+                    row_cells.append(cell_text)
+
+                row_line = " | ".join(row_cells)
+                if row_line.strip():
+                    text_parts.append(row_line)
+
+            total_rows += rows_read
+            text_parts.append("")  # blank line between sheets
+
+        wb.close()
+
+        result = "\n".join(text_parts)
+        if result.strip():
+            summary = f"[Excel: {len(wb.worksheets)} sheets, {total_rows} hàng tổng]"
+            logger.info(f"Excel parsed: {len(wb.worksheets)} sheets, {total_rows} rows, {len(result)} chars")
+            return result + "\n\n" + summary
+        else:
+            logger.warning("Excel file appears empty")
+            return ""
+
+    except Exception as e:
+        logger.error(f"Excel parsing failed: {e}")
+        return ""
+
+
 async def convert_pdf_to_images(file_path: str, max_pages: int = 10, dpi: int = 200) -> list[str]:
     """Convert PDF pages to PNG images for OCR fallback.
     
@@ -150,6 +213,8 @@ def get_file_type(file_path: str) -> str:
         ".pdf": "pdf",
         ".doc": "docx",
         ".docx": "docx",
+        ".xlsx": "xlsx",
+        ".xls": "xls_legacy",
         ".jpg": "image",
         ".jpeg": "image",
         ".png": "image",
@@ -165,7 +230,7 @@ def get_file_type(file_path: str) -> str:
 async def extract_text(file_path: str, max_pages: int = 100) -> tuple[str, str]:
     """
     Extract text from a document file.
-    
+
     Returns:
         tuple: (extracted_text, file_type)
         If file_type is 'image', text will be empty (handled by AI directly)
@@ -178,6 +243,10 @@ async def extract_text(file_path: str, max_pages: int = 100) -> tuple[str, str]:
 
     elif file_type == "docx":
         text = await parse_docx(file_path)
+        return text, file_type
+
+    elif file_type == "xlsx":
+        text = await parse_xlsx(file_path)
         return text, file_type
 
     elif file_type == "image":
