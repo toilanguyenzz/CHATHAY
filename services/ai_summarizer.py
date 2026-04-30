@@ -617,8 +617,10 @@ async def _call_with_smart_routing(
     max_tokens: int = 8192,
     response_json: bool = True,
     force_gemini: bool = False,
+    system_prompt: str | None = None,
 ) -> str:
     """Smart routing: DeepSeek cho text, Gemini cho ảnh."""
+    _sys_prompt = system_prompt or SYSTEM_PROMPT
     
     # ── Nếu CÓ DeepSeek key VÀ KHÔNG bắt buộc Gemini → dùng DeepSeek ──
     if config.DEEPSEEK_API_KEY and not force_gemini:
@@ -627,6 +629,7 @@ async def _call_with_smart_routing(
             if isinstance(content, str):
                 result = await _call_deepseek(
                     prompt=content,
+                    system_prompt=_sys_prompt,
                     max_tokens=max_tokens,
                     response_json=response_json,
                 )
@@ -642,7 +645,7 @@ async def _call_with_smart_routing(
     # ── Fallback / Ảnh: dùng Gemini (nếu DeepSeek lỗi hoặc là ảnh) ──
     logger.info("Routing request to Gemini (Fallback/Vision)...")
     return await _call_gemini_with_fallback(
-        content, text_length, max_tokens, response_json
+        content, text_length, max_tokens, response_json, system_prompt=_sys_prompt
     )
 
 
@@ -652,8 +655,10 @@ async def _call_gemini_with_fallback(
     text_length: int = 0,
     max_tokens: int = 8192,
     response_json: bool = True,
+    system_prompt: str | None = None,
 ) -> str:
     """Gọi Gemini với fallback: nếu model chính 404 → thử model khác."""
+    _sys_prompt = system_prompt or SYSTEM_PROMPT
     models_to_try = [
         MODEL_STANDARD,          # gemini-2.5-flash (chính)
         "gemini-2.0-flash",      # fallback duy nhất
@@ -679,7 +684,7 @@ async def _call_gemini_with_fallback(
             _configure_next_key()
             model = genai.GenerativeModel(
                 model_name=model_name,
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=_sys_prompt,
                 generation_config=genai.GenerationConfig(**gen_config_kwargs),
             )
             response = model.generate_content(
