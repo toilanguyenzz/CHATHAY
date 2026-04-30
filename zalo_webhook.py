@@ -1792,59 +1792,177 @@ async def handle_zalo_text(user_id: str, text: str):
     if await handle_interactive_command(user_id, normalized):
         return
 
-    # ── SMART REDIRECT: 3 CASE riêng biệt + random pool chống nhàm chán ──
-    _greeting_words = {"chào", "hello", "hi", "hey", "alo", "ok", "oke", "yo", "xin chào"}
-    _useless_words = {"haha", "hehe", "hihi", "gì", "sao", "ơi", "ê", "ơ", "ừ", "ok", "oke"}
-    _chatgpt_phrases = ["bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói",
-                        "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt",
-                        "hỏi đáp", "trả lời câu hỏi", "giải bài", "làm bài"]
-    _question_markers = ["tại sao", "vì sao", "như thế nào", "là gì", "có phải", "bao nhiêu",
-                         "ở đâu", "khi nào", "ai là", "giải thích", "cho hỏi", "hỏi"]
+    # ── SMART REDIRECT: Nhận diện ý định chat + trả lời thân thiện ──
 
-    is_greeting = normalized in _greeting_words
-    is_chatgpt = any(kw in normalized for kw in _chatgpt_phrases) and len(normalized) < 80
+    # ── Pattern pools ──
+    _greeting_words = {
+        "chào", "hello", "hi", "hey", "alo", "ok", "oke", "yo", "xin chào",
+        "chào bạn", "hi bạn", "hello bạn", "chào bot", "hey bot",
+    }
+
+    _useless_words = {
+        "haha", "hehe", "hihi", "gì", "sao", "ơi", "ê", "ơ", "ừ", "ok", "oke",
+        "ủa", "huh", "lol", "hmm", "ah", "ồ", "ơ kìa", "vậy", "rồi", "đc",
+        "ok luôn", "vâng", "dạ", "tks", "thanks", "cảm ơn",
+    }
+
+    _chatgpt_phrases = [
+        "bạn là ai", "chatgpt", "chat gpt", "ai tạo ra", "tử vi", "xem bói",
+        "bạn là gì", "mày là ai", "bot à", "có phải ai", "giống chatgpt",
+        "hỏi đáp", "trả lời câu hỏi", "giải bài", "làm bài",
+        "bạn tên gì", "tên bạn là gì", "ai tạo bạn", "bạn có thông minh",
+        "bạn biết gì", "bạn có hiểu", "nói chuyện đi", "chat với tôi",
+        "kể chuyện", "hát đi", "viết thơ", "dịch giùm", "dịch hộ",
+    ]
+
+    # Câu hỏi về khả năng / chức năng bot
+    _capability_phrases = [
+        "bạn giúp gì", "giúp gì được", "bạn làm gì", "làm được gì",
+        "bạn có thể", "giúp được gì", "biết làm gì", "chức năng",
+        "hướng dẫn", "dùng sao", "dùng như nào", "sử dụng",
+        "xài sao", "xài như nào", "cách dùng", "cách sử dụng",
+        "help", "menu", "bắt đầu", "start", "bạn hỗ trợ",
+        "hỗ trợ gì", "tính năng", "feature",
+    ]
+
+    _question_markers = [
+        "tại sao", "vì sao", "như thế nào", "là gì", "có phải", "bao nhiêu",
+        "ở đâu", "khi nào", "ai là", "giải thích", "cho hỏi", "hỏi",
+        "nghĩa là gì", "có nghĩa gì", "thế nào",
+    ]
+
+    _thanks_words = {
+        "cảm ơn", "cám ơn", "thank", "thanks", "tks", "thankiu", "thank you",
+        "cảm ơn bạn", "cảm ơn nhé", "tuyệt vời", "hay quá", "giỏi quá",
+        "đỉnh", "ok cảm ơn", "chuẩn", "hay", "tốt",
+    }
+
+    is_greeting = normalized in _greeting_words or any(normalized.startswith(g) for g in ["chào ", "hello ", "hi ", "xin chào"])
+    is_chatgpt = any(kw in normalized for kw in _chatgpt_phrases) and len(normalized) < 100
+    is_capability = any(kw in normalized for kw in _capability_phrases) and len(normalized) < 100
+    is_thanks = normalized in _thanks_words or any(kw in normalized for kw in _thanks_words)
     is_question = (any(kw in normalized for kw in _question_markers) and len(normalized) > 15
+                   and len(normalized) < 80
                    and not normalized.startswith(("tim ", "tìm ")))
     is_useless = normalized in _useless_words or len(text.strip()) < 5
 
-    # ═══ CASE A: Greeting — thân thiện, CTA ngắn ═══
+    # ═══ CASE A: Greeting — thân thiện, ấm áp ═══
     if is_greeting:
         greetings = [
-            "👋 Hey! Gửi 1 tấm ảnh tài liệu bất kỳ — mình đọc và tóm tắt trong 15 giây! 📸",
-            "📸 Chào bạn! Chụp ảnh slide, bài giảng, hóa đơn hay giấy tờ gì cần đọc gửi mình nhé!",
-            "👋 Hi! Mình đọc tài liệu giỏi lắm — thử gửi 1 ảnh hoặc file xem! 📎",
-            f"👋 Chào! Mình là {PRODUCT_NAME}. Gửi ảnh hoặc file tài liệu — mình tóm tắt ngay! ⚡",
+            (
+                f"👋 Chào bạn! Mình là {PRODUCT_NAME} — trợ lý đọc tài liệu AI của bạn!\n\n"
+                "📸 Chỉ cần chụp ảnh hoặc gửi file (PDF, Word, Excel) — mình đọc và tóm tắt trong 15 giây.\n\n"
+                "Thử gửi 1 tấm ảnh tài liệu xem nhé! 😊"
+            ),
+            (
+                f"👋 Hey! Rất vui được gặp bạn! Mình là {PRODUCT_NAME} 📖\n\n"
+                "Mình có thể giúp bạn:\n"
+                "📸 Đọc ảnh tài liệu, slide, sách\n"
+                "📄 Tóm tắt file PDF, Word, Excel\n"
+                "🔊 Đọc thành audio nghe tiện\n\n"
+                "Gửi tài liệu cho mình thử nhé! ⚡"
+            ),
+            (
+                f"👋 Xin chào! Mình là {PRODUCT_NAME} — bạn đồng hành đọc tài liệu!\n\n"
+                "Bạn có slide, sách, hóa đơn hay giấy tờ gì cần đọc không? "
+                "Chụp ảnh hoặc gửi file — mình lo hết! 📸📎"
+            ),
         ]
         await send_text_message(user_id, random.choice(greetings))
         return
 
-    # ═══ CASE B: Câu hỏi kiến thức / tưởng ChatGPT ═══
+    # ═══ CASE B: Hỏi về khả năng / chức năng ═══
+    if is_capability:
+        capability_responses = [
+            (
+                f"😊 Mình là {PRODUCT_NAME} — trợ lý đọc tài liệu AI! Mình giúp bạn được những việc này:\n\n"
+                "📸 **Đọc ảnh** — Chụp ảnh slide, sách, hóa đơn, giấy tờ → mình tóm tắt ngay\n"
+                "📄 **Đọc file** — Gửi PDF, Word (.doc, .docx), Excel → mình phân tích chi tiết\n"
+                "🔊 **Nghe audio** — Mình đọc thành giọng nói cho bạn nghe tiện\n"
+                "❓ **Hỏi đáp** — Sau khi đọc xong, bạn hỏi bất kỳ câu gì về tài liệu đó\n"
+                "📋 **Trích xuất chữ** — OCR lấy text từ ảnh chụp\n\n"
+                "👉 Bắt đầu thôi! Gửi 1 ảnh hoặc file tài liệu cho mình nhé! 🚀"
+            ),
+            (
+                f"📖 {PRODUCT_NAME} có thể giúp bạn:\n\n"
+                "1️⃣ Tóm tắt tài liệu dài thành các ý chính dễ hiểu\n"
+                "2️⃣ Đọc ảnh chụp tài liệu (slide, sách, hóa đơn...)\n"
+                "3️⃣ Phân tích file PDF, Word, Excel\n"
+                "4️⃣ Trả lời câu hỏi về nội dung tài liệu\n"
+                "5️⃣ Đọc thành audio cho bạn nghe\n\n"
+                "💡 Thử ngay: Chụp ảnh 1 trang sách hoặc gửi file tài liệu cho mình! 📸"
+            ),
+        ]
+        await send_text_message(user_id, random.choice(capability_responses))
+        return
+
+    # ═══ CASE C: Cảm ơn / khen ═══
+    if is_thanks:
+        thanks_responses = [
+            "😊 Không có gì nha! Khi nào có tài liệu cần đọc, cứ gửi cho mình nhé! 📸",
+            f"🥰 Cảm ơn bạn đã dùng {PRODUCT_NAME}! Mình luôn sẵn sàng giúp bạn đọc tài liệu! 📖",
+            "😊 Mình vui vì giúp được bạn! Có file hay ảnh nào cần đọc tiếp cứ gửi nhé! ⚡",
+        ]
+        await send_text_message(user_id, random.choice(thanks_responses))
+        return
+
+    # ═══ CASE D: Câu hỏi kiến thức / tưởng ChatGPT ═══
     if is_chatgpt or is_question:
         knowledge_redirects = [
             (
-                "🤔 Câu hỏi hay! Nhưng mình chuyên đọc tài liệu, không phải chatbot hỏi đáp.\n\n"
-                "📸 Thử chụp ảnh bài giảng, sách, hóa đơn hay giấy tờ nào cần tóm tắt gửi mình — mình đọc nhanh lắm!"
+                f"😊 Mình là {PRODUCT_NAME} — chuyên đọc và tóm tắt tài liệu nhé bạn!\n\n"
+                "Mình không trả lời câu hỏi kiến thức chung được, nhưng nếu bạn có "
+                "slide, sách, hay giấy tờ gì cần đọc — gửi cho mình là mình lo! 📸📄"
             ),
             (
-                "😊 Mình không trả lời câu hỏi được, nhưng mình ĐỌC TÀI LIỆU cực giỏi!\n\n"
-                "📎 Gửi ảnh hoặc file PDF/Word bất kỳ — mình tóm tắt trong 15 giây!"
+                "📖 Mình là trợ lý ĐỌC TÀI LIỆU, không phải chatbot hỏi đáp chung nhé bạn!\n\n"
+                "Nhưng mình đọc tài liệu rất giỏi! Thử gửi:\n"
+                "📸 Ảnh chụp slide, sách, bài giảng\n"
+                "📄 File PDF, Word, Excel\n\n"
+                "Mình tóm tắt nhanh lắm luôn! ⚡"
             ),
             (
-                "📖 Mình là trợ lý ĐỌC TÀI LIỆU, không phải chatbot trả lời câu hỏi nhé!\n\n"
-                "Thử chụp ảnh tài liệu bất kỳ gửi mình — slide, sách, hợp đồng, hóa đơn... gì cũng được! 📸"
+                f"🤗 Câu hỏi hay! Tiếc là mình chỉ chuyên đọc tài liệu thôi bạn ơi.\n\n"
+                "Bạn có ảnh hay file tài liệu nào cần mình đọc giúp không? "
+                "Chụp ảnh hoặc gửi file — mình xử lý trong 15 giây! 📸"
             ),
         ]
         await send_text_message(user_id, random.choice(knowledge_redirects))
         return
 
-    # ═══ CASE C: Text ngắn / linh tinh / sticker text ═══
+    # ═══ CASE E: Text ngắn / linh tinh / không rõ ý ═══
     if is_useless or len(text.strip()) < 15:
         useless_redirects = [
-            "📎 Mình đọc tài liệu giỏi lắm nhé! Thử chụp ảnh slide, sách, hoặc giấy tờ gửi mình xem 📸",
-            "📸 Gửi ảnh hoặc file tài liệu cho mình — mình tóm tắt trong 15 giây! ⚡",
-            f"📖 Mình là {PRODUCT_NAME} — chuyên đọc tài liệu! Gửi ảnh hoặc file thử nhé 📎",
+            (
+                f"📖 Mình là {PRODUCT_NAME} — trợ lý đọc tài liệu!\n\n"
+                "Gửi ảnh hoặc file tài liệu cho mình — mình tóm tắt ngay nhé! 📸"
+            ),
+            "📸 Gửi ảnh hoặc file tài liệu cho mình — mình đọc và tóm tắt trong 15 giây! ⚡",
+            f"😊 Mình giúp bạn đọc tài liệu nha! Chụp ảnh hoặc gửi file cho mình thử xem! 📎",
         ]
         await send_text_message(user_id, random.choice(useless_redirects))
+        return
+
+    # ═══ CASE F: Text trung bình (15-80 ký tự) — có thể là chat, không phải tài liệu ═══
+    if len(text.strip()) < 80:
+        short_text_redirects = [
+            (
+                f"😊 Mình là {PRODUCT_NAME} — chuyên đọc và tóm tắt tài liệu!\n\n"
+                "Nếu bạn có ảnh hoặc file cần đọc, gửi cho mình nhé! 📸📄\n"
+                "Mình sẽ tóm tắt nhanh gọn trong 15 giây! ⚡"
+            ),
+            (
+                "📖 Mình hiểu bạn muốn nói gì, nhưng mình chuyên đọc tài liệu nha!\n\n"
+                "Thử gửi ảnh slide, sách, hóa đơn, hoặc file PDF/Word — mình đọc giúp liền! 📸"
+            ),
+            (
+                f"😊 Mình là trợ lý đọc tài liệu AI! Gửi cho mình:\n"
+                "📸 Ảnh chụp tài liệu\n"
+                "📄 File PDF, Word, Excel\n\n"
+                "Mình tóm tắt và phân tích chi tiết cho bạn! ⚡"
+            ),
+        ]
+        await send_text_message(user_id, random.choice(short_text_redirects))
         return
 
     # Text dài → tóm tắt AI
