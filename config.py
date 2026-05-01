@@ -7,8 +7,7 @@ load_dotenv()
 
 
 class Config:
-    # Telegram
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
 
     # Gemini AI (support multi-key rotation for quota multiplication)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

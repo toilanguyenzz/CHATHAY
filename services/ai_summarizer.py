@@ -603,11 +603,10 @@ async def _call_deepseek(
         data = response.json()
         result = data["choices"][0]["message"]["content"]
         
-        # Post-processing: Detect Chinese output → reject and fallback to Gemini
+        # We no longer reject Chinese here, because the pipeline will send it to Gemini for translation
         if _contains_chinese(result):
-            logger.warning("DeepSeek returned Chinese text! Rejecting and falling back to Gemini.")
-            raise ValueError("DeepSeek output contains Chinese characters — falling back to Gemini")
-        
+            logger.warning("DeepSeek returned Chinese text. Pipeline will pass to Gemini for translation.")
+            
         return result
 
 
@@ -627,22 +626,43 @@ async def _call_with_smart_routing(
         try:
             # content phải là string (text-only)
             if isinstance(content, str):
-                result = await _call_deepseek(
+                logger.info("Pipeline Step 1: DeepSeek processing logic...")
+                ds_result = await _call_deepseek(
                     prompt=content,
                     system_prompt=_sys_prompt,
                     max_tokens=max_tokens,
-                    response_json=response_json,
+                    response_json=False, # We don't need strict JSON from DeepSeek, Gemini will format it
                 )
-                logger.info("DeepSeek V4 Flash OK: %s chars", len(result))
-                return result
+                logger.info("Pipeline Step 1 OK. DeepSeek output: %s chars", len(ds_result))
+                
+                logger.info("Pipeline Step 2: Gemini polishing, translating and formatting...")
+                gemini_prompt = (
+                    "Dưới đây là kết quả trích xuất và phân tích ban đầu từ một trợ lý AI khác "
+                    "(có thể chứa tiếng Trung hoặc format chưa chuẩn).\n"
+                    "Nhiệm vụ của bạn là: Dịch 100% sang tiếng Việt có dấu tự nhiên, chuẩn hóa lại "
+                    "toàn bộ cấu trúc văn bản, và xuất ra CHÍNH XÁC theo định dạng JSON được yêu cầu "
+                    "trong system prompt.\n\n"
+                    "Kết quả ban đầu:\n"
+                    f"{ds_result}"
+                )
+                
+                final_result = await _call_gemini_with_fallback(
+                    content=gemini_prompt,
+                    text_length=len(gemini_prompt),
+                    max_tokens=max_tokens,
+                    response_json=response_json,
+                    system_prompt=_sys_prompt
+                )
+                logger.info("Pipeline Step 2 OK. Gemini final output: %s chars", len(final_result))
+                return final_result
         except httpx.HTTPStatusError as exc:
-            logger.error("DeepSeek API Error (HTTP %s): %s. Auto-switching to Gemini...", exc.response.status_code, exc)
+            logger.error("DeepSeek API Error (HTTP %s): %s. Auto-switching to pure Gemini...", exc.response.status_code, exc)
         except httpx.RequestError as exc:
-            logger.error("DeepSeek Network Error: %s. Auto-switching to Gemini...", exc)
+            logger.error("DeepSeek Network Error: %s. Auto-switching to pure Gemini...", exc)
         except Exception as exc:
-            logger.error("DeepSeek Unexpected Error: %s. Auto-switching to Gemini...", exc)
+            logger.error("DeepSeek Unexpected Error: %s. Auto-switching to pure Gemini...", exc)
     
-    # ── Fallback / Ảnh: dùng Gemini (nếu DeepSeek lỗi hoặc là ảnh) ──
+    # ── Fallback / Ảnh: dùng Gemini trực tiếp (nếu DeepSeek lỗi hoặc là ảnh) ──
     logger.info("Routing request to Gemini (Fallback/Vision)...")
     return await _call_gemini_with_fallback(
         content, text_length, max_tokens, response_json, system_prompt=_sys_prompt
