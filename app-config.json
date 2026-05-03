@@ -1,0 +1,17 @@
+{
+  "app": {
+    "title": "CHAT HAY",
+    "textColor": {
+      "light": "black",
+      "dark": "white"
+    },
+    "statusBar": "transparent",
+    "actionBarHidden": true,
+    "hideIOSSafeAreaBottom": true,
+    "hideAndroidBottomNavigationBar": false
+  },
+  "appId": "YOUR_APP_ID_HERE",
+  "listCSS": [],
+  "listSyncJS": [],
+  "listAsyncJS": []
+}
