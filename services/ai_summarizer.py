@@ -88,7 +88,7 @@ class SummaryCache:
 
     @staticmethod
     def _hash(text: str) -> str:
-        return hashlib.md5(text.encode("utf-8")).hexdigest()
+        return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     def get(self, text: str) -> dict[str, Any] | None:
         key = self._hash(text)
@@ -556,6 +556,314 @@ def _contains_chinese(text: str) -> bool:
     return cjk_count > 10
 
 
+PIPELINE_METRICS = {
+    "deepseek_requests": 0,
+    "deepseek_fast_pass": 0,
+    "gemini_polish": 0,
+    "gemini_rescue": 0,
+    "gemini_fallback": 0,
+}
+
+PREMIUM_TEXT_LENGTH = 6000
+HIGH_VALUE_KEYWORDS = (
+    "hop dong", "hợp đồng", "dieu khoan", "điều khoản", "thanh toan", "thanh toán",
+    "hoa don", "hóa đơn", "thue", "thuế", "phap ly", "pháp lý", "phat cham",
+    "phạt chậm", "boi thuong", "bồi thường", "nghia vu", "nghĩa vụ",
+    "don thuoc", "đơn thuốc", "benh vien", "bệnh viện", "chan doan", "chẩn đoán",
+    "xet nghiem", "xét nghiệm", "cong van", "công văn", "quyet dinh", "quyết định",
+    "de thi", "đề thi", "on thi", "ôn thi", "bai giang", "bài giảng",
+)
+
+
+def _bump_pipeline_metric(name: str) -> None:
+    PIPELINE_METRICS[name] = PIPELINE_METRICS.get(name, 0) + 1
+
+
+def _source_part_for_routing(prompt: str) -> str:
+    """Extract the real user/document text, excluding prompt examples when possible."""
+    markers = [
+        "═════════════════════════════════",
+        "NỘI DUNG TÀI LIỆU:",
+        "Tài liệu:\n---",
+        "Tin nhắn từ người dùng Zalo:",
+    ]
+    for marker in markers:
+        if marker in prompt:
+            return prompt.split(marker, 1)[1]
+    return prompt
+
+
+def _instruction_part_for_editor(prompt: str, max_len: int = 5000) -> str:
+    """Keep the schema/rules for Gemini without resending the full source document."""
+    markers = [
+        "═════════════════════════════════",
+        "NỘI DUNG TÀI LIỆU:",
+        "Tài liệu:\n---",
+    ]
+    instruction = prompt
+    for marker in markers:
+        if marker in prompt:
+            instruction = prompt.split(marker, 1)[0]
+            break
+    instruction = instruction.strip()
+    if len(instruction) <= max_len:
+        return instruction
+    return instruction[:max_len].rstrip() + "\n[...đã rút gọn phần quy tắc...]"
+
+
+def _is_high_value_content(prompt: str, text_length: int) -> bool:
+    if text_length >= PREMIUM_TEXT_LENGTH:
+        return True
+    source = _normalize_whitespace(_source_part_for_routing(prompt)).lower()
+    return any(keyword in source for keyword in HIGH_VALUE_KEYWORDS)
+
+
+def _expected_json_collection(prompt: str, parsed: dict[str, Any] | None = None) -> str | None:
+    if parsed:
+        for key in ("questions", "flashcards", "points"):
+            if key in parsed:
+                return key
+
+    lowered = prompt.lower()
+    if '"flashcards"' in lowered:
+        return "flashcards"
+    if '"questions"' in lowered:
+        return "questions"
+    if '"points"' in lowered:
+        return "points"
+    return None
+
+
+def _json_candidate(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            start_idx = text.find("\n")
+            end_idx = text.rfind("```")
+            if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                text = text[start_idx:end_idx].strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    if start >= 0:
+        return text[start:]
+    return text
+
+
+def _parse_json_silent(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    candidate = _json_candidate(text)
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed, None
+        return None, "json_not_object"
+    except json.JSONDecodeError as exc:
+        repaired = _repair_json(candidate)
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed, None
+            return None, "json_not_object"
+        except json.JSONDecodeError:
+            return None, f"invalid_json: {exc}"
+
+
+def _quality_gate(
+    text: str,
+    *,
+    response_json: bool,
+    prompt: str = "",
+    target_points: int | None = None,
+) -> dict[str, Any]:
+    """Validate model output before exposing it or paying for another polishing pass."""
+    issues: list[str] = []
+    parsed: dict[str, Any] | None = None
+    stripped = (text or "").strip()
+
+    if not stripped:
+        issues.append("empty_output")
+        return {"passed": False, "issues": issues, "parsed": None}
+
+    if _contains_chinese(stripped):
+        issues.append("contains_cjk")
+
+    if not response_json:
+        if len(stripped) < 8:
+            issues.append("too_short")
+        return {"passed": not issues, "issues": issues, "parsed": None}
+
+    parsed, parse_error = _parse_json_silent(stripped)
+    if parse_error:
+        issues.append(parse_error)
+        return {"passed": False, "issues": issues, "parsed": None}
+
+    collection_key = _expected_json_collection(prompt, parsed)
+    if collection_key:
+        items = parsed.get(collection_key)
+        if not isinstance(items, list) or not items:
+            issues.append(f"missing_{collection_key}")
+        elif collection_key == "points":
+            min_points = max(2, min(target_points or MIN_SUMMARY_POINTS, MIN_SUMMARY_POINTS))
+            if len(items) < min_points:
+                issues.append(f"too_few_points:{len(items)}")
+            for field in ("document_title", "overview"):
+                if not _normalize_whitespace(str(parsed.get(field, ""))):
+                    issues.append(f"missing_{field}")
+            weak_details = 0
+            for point in items:
+                if not isinstance(point, dict):
+                    issues.append("point_not_object")
+                    continue
+                detail = _normalize_whitespace(str(point.get("detail", "")))
+                title = _normalize_whitespace(str(point.get("title", "")))
+                if not title:
+                    issues.append("point_missing_title")
+                if len(detail) < 40:
+                    weak_details += 1
+            if items and weak_details >= len(items):
+                issues.append("all_details_too_short")
+        elif collection_key == "questions":
+            for idx, question in enumerate(items[:10], start=1):
+                if not isinstance(question, dict):
+                    issues.append(f"question_{idx}_not_object")
+                    continue
+                options = question.get("options")
+                if not question.get("question") or not isinstance(options, list) or len(options) < 4:
+                    issues.append(f"question_{idx}_incomplete")
+        elif collection_key == "flashcards":
+            for idx, card in enumerate(items[:10], start=1):
+                if not isinstance(card, dict) or not card.get("front") or not card.get("back"):
+                    issues.append(f"flashcard_{idx}_incomplete")
+    elif not parsed:
+        issues.append("json_empty_object")
+
+    return {"passed": not issues, "issues": issues, "parsed": parsed}
+
+
+def _json_response(parsed: dict[str, Any]) -> str:
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def _build_gemini_editor_prompt(
+    original_prompt: str,
+    draft: str,
+    *,
+    response_json: bool,
+    issues: list[str] | None = None,
+) -> str:
+    issue_text = ", ".join(issues or []) or "không có lỗi nghiêm trọng, chỉ cần biên tập chuẩn"
+    instruction = _instruction_part_for_editor(original_prompt)
+    if response_json:
+        output_rule = "Chỉ trả về JSON hợp lệ, không markdown, không giải thích thêm."
+    else:
+        output_rule = "Chỉ trả về câu trả lời cuối cùng bằng plain text tiếng Việt tự nhiên."
+
+    return f"""Dưới đây là kết quả phân tích thô từ một AI khác.
+Nó có thể còn lẫn tiếng Trung, văn phong chưa tự nhiên, hoặc format chưa chuẩn.
+
+Lỗi/điểm cần kiểm tra từ Quality Gate: {issue_text}
+
+YÊU CẦU GỐC VỀ FORMAT VÀ QUY TẮC:
+{instruction}
+
+BẢN PHÂN TÍCH THÔ:
+{draft}
+
+NHIỆM VỤ CỦA BẠN:
+1. Dịch 100% sang tiếng Việt có dấu, tự nhiên, dễ hiểu.
+2. Xóa toàn bộ ký tự Trung/Nhật/Hàn nếu không phải tên riêng bắt buộc.
+3. Giữ nguyên các số liệu, ngày tháng, tên riêng, nghĩa vụ và dữ kiện quan trọng.
+4. Không tự bịa thêm dữ kiện không có trong bản phân tích thô.
+5. {output_rule}"""
+
+
+def _build_gemini_repair_prompt(
+    bad_output: str,
+    *,
+    response_json: bool,
+    issues: list[str],
+    original_prompt: str,
+) -> str:
+    instruction = _instruction_part_for_editor(original_prompt)
+    if response_json:
+        repair_rule = "Sửa thành JSON hợp lệ tuyệt đối. Chỉ trả JSON, không markdown."
+    else:
+        repair_rule = "Sửa thành câu trả lời tiếng Việt tự nhiên. Chỉ trả plain text."
+
+    return f"""Output dưới đây chưa qua Quality Gate.
+Lỗi: {", ".join(issues)}
+
+YÊU CẦU GỐC:
+{instruction}
+
+OUTPUT CẦN SỬA:
+{bad_output}
+
+{repair_rule}
+Không thêm dữ kiện mới. Không dùng tiếng Trung."""
+
+
+async def _call_gemini_checked(
+    content,
+    text_length: int,
+    max_tokens: int,
+    response_json: bool,
+    system_prompt: str,
+    *,
+    quality_target_points: int | None = None,
+    original_prompt: str | None = None,
+) -> str:
+    result = await _call_gemini_with_fallback(
+        content=content,
+        text_length=text_length,
+        max_tokens=max_tokens,
+        response_json=response_json,
+        system_prompt=system_prompt,
+    )
+    prompt_for_gate = original_prompt if original_prompt is not None else (content if isinstance(content, str) else "")
+    gate = _quality_gate(
+        result,
+        response_json=response_json,
+        prompt=prompt_for_gate,
+        target_points=quality_target_points,
+    )
+    if gate["passed"]:
+        if response_json and gate["parsed"] is not None:
+            return _json_response(gate["parsed"])
+        return result.strip()
+
+    logger.warning("Gemini output failed Quality Gate: %s", gate["issues"])
+    repair_prompt = _build_gemini_repair_prompt(
+        bad_output=result,
+        response_json=response_json,
+        issues=gate["issues"],
+        original_prompt=prompt_for_gate,
+    )
+    repaired = await _call_gemini_with_fallback(
+        content=repair_prompt,
+        text_length=len(repair_prompt),
+        max_tokens=max_tokens,
+        response_json=response_json,
+        system_prompt=system_prompt,
+    )
+    repair_gate = _quality_gate(
+        repaired,
+        response_json=response_json,
+        prompt=prompt_for_gate,
+        target_points=quality_target_points,
+    )
+    if response_json:
+        if repair_gate["passed"] and repair_gate["parsed"] is not None:
+            return _json_response(repair_gate["parsed"])
+        raise ValueError(f"Gemini repair vẫn không qua Quality Gate: {repair_gate['issues']}")
+    if repair_gate["passed"]:
+        return repaired.strip()
+    return repaired.strip()
+
+
 async def _call_deepseek(
     prompt: str,
     system_prompt: str = SYSTEM_PROMPT,
@@ -617,56 +925,133 @@ async def _call_with_smart_routing(
     response_json: bool = True,
     force_gemini: bool = False,
     system_prompt: str | None = None,
+    quality_mode: str = "auto",
+    quality_target_points: int | None = None,
 ) -> str:
-    """Smart routing: DeepSeek cho text, Gemini cho ảnh."""
+    """Smart routing with Quality Gate.
+
+    Modes:
+    - auto: DeepSeek first; return directly if clean, otherwise Gemini polish/repair.
+    - fast: prefer DeepSeek direct output unless it fails Quality Gate.
+    - premium: always use DeepSeek as analyst, then Gemini as editor.
+    """
     _sys_prompt = system_prompt or SYSTEM_PROMPT
-    
-    # ── Nếu CÓ DeepSeek key VÀ KHÔNG bắt buộc Gemini → dùng DeepSeek ──
-    if config.DEEPSEEK_API_KEY and not force_gemini:
-        try:
-            # content phải là string (text-only)
-            if isinstance(content, str):
-                logger.info("Pipeline Step 1: DeepSeek processing logic...")
-                ds_result = await _call_deepseek(
-                    prompt=content,
-                    system_prompt=_sys_prompt,
-                    max_tokens=max_tokens,
-                    response_json=False, # We don't need strict JSON from DeepSeek, Gemini will format it
-                )
-                logger.info("Pipeline Step 1 OK. DeepSeek output: %s chars", len(ds_result))
-                
-                logger.info("Pipeline Step 2: Gemini polishing, translating and formatting...")
-                gemini_prompt = (
-                    "Dưới đây là kết quả trích xuất và phân tích ban đầu từ một trợ lý AI khác "
-                    "(có thể chứa tiếng Trung hoặc format chưa chuẩn).\n"
-                    "Nhiệm vụ của bạn là: Dịch 100% sang tiếng Việt có dấu tự nhiên, chuẩn hóa lại "
-                    "toàn bộ cấu trúc văn bản, và xuất ra CHÍNH XÁC theo định dạng JSON được yêu cầu "
-                    "trong system prompt.\n\n"
-                    "Kết quả ban đầu:\n"
-                    f"{ds_result}"
-                )
-                
-                final_result = await _call_gemini_with_fallback(
-                    content=gemini_prompt,
-                    text_length=len(gemini_prompt),
-                    max_tokens=max_tokens,
-                    response_json=response_json,
-                    system_prompt=_sys_prompt
-                )
-                logger.info("Pipeline Step 2 OK. Gemini final output: %s chars", len(final_result))
-                return final_result
-        except httpx.HTTPStatusError as exc:
-            logger.error("DeepSeek API Error (HTTP %s): %s. Auto-switching to pure Gemini...", exc.response.status_code, exc)
-        except httpx.RequestError as exc:
-            logger.error("DeepSeek Network Error: %s. Auto-switching to pure Gemini...", exc)
-        except Exception as exc:
-            logger.error("DeepSeek Unexpected Error: %s. Auto-switching to pure Gemini...", exc)
-    
-    # ── Fallback / Ảnh: dùng Gemini trực tiếp (nếu DeepSeek lỗi hoặc là ảnh) ──
-    logger.info("Routing request to Gemini (Fallback/Vision)...")
-    return await _call_gemini_with_fallback(
-        content, text_length, max_tokens, response_json, system_prompt=_sys_prompt
+
+    if force_gemini or not isinstance(content, str) or not config.DEEPSEEK_API_KEY:
+        logger.info("Routing request to Gemini (Vision/forced/no DeepSeek key)...")
+        return await _call_gemini_checked(
+            content,
+            text_length,
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+        )
+
+    preselected_premium = quality_mode == "premium" or (
+        quality_mode == "auto" and response_json and _is_high_value_content(content, text_length)
     )
+    deepseek_json_mode = response_json and not preselected_premium
+
+    try:
+        logger.info(
+            "Pipeline Step 1: DeepSeek processing logic (mode=%s, json=%s)...",
+            "premium" if preselected_premium else quality_mode,
+            deepseek_json_mode,
+        )
+        _bump_pipeline_metric("deepseek_requests")
+        ds_result = await _call_deepseek(
+            prompt=content,
+            system_prompt=_sys_prompt,
+            max_tokens=max_tokens,
+            response_json=deepseek_json_mode,
+        )
+        logger.info("Pipeline Step 1 OK. DeepSeek output: %s chars", len(ds_result))
+    except httpx.HTTPStatusError as exc:
+        logger.error("DeepSeek API Error (HTTP %s): %s. Auto-switching to pure Gemini...", exc.response.status_code, exc)
+        _bump_pipeline_metric("gemini_fallback")
+        return await _call_gemini_checked(
+            content,
+            text_length,
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+        )
+    except httpx.RequestError as exc:
+        logger.error("DeepSeek Network Error: %s. Auto-switching to pure Gemini...", exc)
+        _bump_pipeline_metric("gemini_fallback")
+        return await _call_gemini_checked(
+            content,
+            text_length,
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+        )
+    except Exception as exc:
+        logger.error("DeepSeek Unexpected Error: %s. Auto-switching to pure Gemini...", exc)
+        _bump_pipeline_metric("gemini_fallback")
+        return await _call_gemini_checked(
+            content,
+            text_length,
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+        )
+
+    gate = _quality_gate(
+        ds_result,
+        response_json=response_json,
+        prompt=content,
+        target_points=quality_target_points,
+    )
+
+    if not preselected_premium and gate["passed"]:
+        _bump_pipeline_metric("deepseek_fast_pass")
+        logger.info("Quality Gate PASS: returning DeepSeek output directly. metrics=%s", PIPELINE_METRICS)
+        if response_json and gate["parsed"] is not None:
+            return _json_response(gate["parsed"])
+        return ds_result.strip()
+
+    if preselected_premium:
+        _bump_pipeline_metric("gemini_polish")
+        logger.info("Quality Gate: Premium polish selected; sending DeepSeek draft to Gemini.")
+    else:
+        _bump_pipeline_metric("gemini_rescue")
+        logger.warning("Quality Gate FAIL: %s. Sending to Gemini rescue.", gate["issues"])
+
+    try:
+        logger.info("Pipeline Step 2: Gemini polishing, translating and formatting...")
+        gemini_prompt = _build_gemini_editor_prompt(
+            original_prompt=content,
+            draft=ds_result,
+            response_json=response_json,
+            issues=gate["issues"],
+        )
+        final_result = await _call_gemini_checked(
+            gemini_prompt,
+            len(gemini_prompt),
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+            original_prompt=content,
+        )
+        logger.info("Pipeline Step 2 OK. Gemini final output: %s chars, metrics=%s", len(final_result), PIPELINE_METRICS)
+        return final_result
+    except Exception as exc:
+        logger.error("Gemini polish/rescue failed: %s. Falling back to pure Gemini original prompt...", exc)
+        _bump_pipeline_metric("gemini_fallback")
+        return await _call_gemini_checked(
+            content,
+            text_length,
+            max_tokens,
+            response_json,
+            _sys_prompt,
+            quality_target_points=quality_target_points,
+        )
 
 
 
@@ -744,7 +1129,11 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
     for attempt in range(3):
         try:
             prompt = _build_text_prompt(text, target_points)
-            response_text = await _call_with_smart_routing(prompt, len(text))
+            response_text = await _call_with_smart_routing(
+                prompt,
+                len(text),
+                quality_target_points=target_points,
+            )
             parsed = _extract_json(response_text)
             normalized = _normalize_points(parsed, target_points)
             logger.info(
@@ -993,4 +1382,3 @@ Trả lời:"""
         if _is_quota_error(exc):
             return QUOTA_MESSAGE
         return "Đã xảy ra lỗi khi phân tích. Vui lòng thử lại!"
-

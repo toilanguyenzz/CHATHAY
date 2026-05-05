@@ -5,6 +5,7 @@ python-multipart==0.0.9
 httpx==0.27.2
 python-dotenv==1.0.1
 websockets>=13.0
+numpy>=1.24.0
 
 # Document Processing
 pdfplumber==0.11.4
@@ -16,6 +17,9 @@ openpyxl==3.1.5
 
 # AI - Google Gemini (free tier)
 google-generativeai==0.8.3
+
+# AI - Embeddings (RAG) — Now using Gemini Embedding API (free, no local model needed)
+# sentence-transformers removed to save ~400MB RAM for free-tier hosting
 
 # TTS - FPT.AI
 aiofiles==24.1.0

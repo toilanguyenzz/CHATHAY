@@ -363,7 +363,7 @@ Bạn nhớ câu này chứ?"""
         """Simple hash of front+back to identify card across sessions"""
         import hashlib
         content = f"{card['front']}|{card['back']}"
-        return hashlib.md5(content.encode()).hexdigest()[:8]
+        return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:8]
 
     def _calculate_next_review(
         self,

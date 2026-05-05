@@ -24,6 +24,10 @@ if create_client and config.SUPABASE_URL and config.SUPABASE_KEY:
     except Exception as e:
         logger.warning(f"Failed to initialize Supabase client, falling back to in-memory: {e}")
 
+def get_supabase_client():
+    """Trả về Supabase client hiện tại."""
+    return supabase
+
 # ===== IN-MEMORY FALLBACK STORAGE =====
 _memory_usage: dict[int, dict] = {}
 _memory_documents: dict[int, OrderedDict] = {}
@@ -53,45 +57,101 @@ _memory_study_sessions: dict[str, dict] = {}
 
 # ===== DB METHODS =====
 
-def check_rate_limit(user_id: int) -> bool:
-    """Check if user has exceeded daily free limit."""
+def check_rate_limit(user_id: int | str, limit_type: str = "general", period_hours: int = 24, max_requests: int | None = None) -> bool:
+    """
+    Check if user has exceeded rate limit for a specific action.
+
+    Args:
+        user_id: User identifier
+        limit_type: Type of action ("general", "chat", "study", "upload")
+        period_hours: Time window in hours
+        max_requests: Override default limit for this type
+
+    Returns:
+        True if under limit, False if exceeded
+    """
     today = time.strftime("%Y-%m-%d")
-    
+    norm_user_id = int(user_id) if str(user_id).isdigit() else str(user_id)
+
+    # Determine limit based on type
+    if max_requests is None:
+        limits = {
+            "general": config.FREE_DAILY_LIMIT,
+            "chat": 5,
+            "chat_doc": 5,
+            "study": config.FREE_STUDY_SESSIONS_PER_DAY,
+            "upload": 5,
+        }
+        limit = limits.get(limit_type, config.FREE_DAILY_LIMIT)
+    else:
+        limit = max_requests
+
+    # Check Supabase
     if supabase:
         try:
-            response = supabase.table("user_usage").select("count").eq("user_id", user_id).eq("date", today).execute()
+            # Use composite key: user_id + action_type for per-action limits
+            response = supabase.table("user_usage")\
+                .select("count")\
+                .eq("user_id", norm_user_id)\
+                .eq("date", today)\
+                .eq("action_type", limit_type)\
+                .execute()
             count = response.data[0]["count"] if response.data else 0
-            return count < config.FREE_DAILY_LIMIT
+            return count < limit
         except Exception as e:
             logger.error(f"Supabase check_rate_limit error: {e}")
-            # Fallback to memory on db failure
-    
-    if user_id not in _memory_usage or _memory_usage[user_id]["date"] != today:
-        _memory_usage[user_id] = {"date": today, "count": 0}
-        
-    return _memory_usage[user_id]["count"] < config.FREE_DAILY_LIMIT
+
+    # Fallback memory
+    memory_key = f"{norm_user_id}:{limit_type}"
+    if memory_key not in _memory_usage or _memory_usage[memory_key]["date"] != today:
+        _memory_usage[memory_key] = {"date": today, "count": 0}
+
+    return _memory_usage[memory_key]["count"] < limit
 
 
-def increment_usage(user_id: int):
-    """Increment the user's daily usage count."""
+def increment_usage(user_id: int | str, action_type: str = "general", amount: int = 1):
+    """
+    Increment the user's usage count for a specific action.
+
+    Args:
+        user_id: User identifier
+        action_type: Type of action ("general", "chat", "study", "upload", "chat_doc")
+        amount: Amount to increment (default 1)
+    """
     today = time.strftime("%Y-%m-%d")
+    norm_user_id = int(user_id) if str(user_id).isdigit() else str(user_id)
 
     if supabase:
         try:
-            response = supabase.table("user_usage").select("count").eq("user_id", user_id).eq("date", today).execute()
+            # Try to update existing record
+            response = supabase.table("user_usage")\
+                .select("count")\
+                .eq("user_id", norm_user_id)\
+                .eq("date", today)\
+                .eq("action_type", action_type)\
+                .execute()
+
             if response.data:
-                new_count = response.data[0]["count"] + 1
-                supabase.table("user_usage").update({"count": new_count}).eq("user_id", user_id).eq("date", today).execute()
+                new_count = response.data[0]["count"] + amount
+                supabase.table("user_usage")\
+                    .update({"count": new_count})\
+                    .eq("user_id", norm_user_id)\
+                    .eq("date", today)\
+                    .eq("action_type", action_type)\
+                    .execute()
             else:
-                supabase.table("user_usage").insert({"user_id": user_id, "date": today, "count": 1}).execute()
+                supabase.table("user_usage")\
+                    .insert({"user_id": norm_user_id, "date": today, "count": amount, "action_type": action_type})\
+                    .execute()
             return
         except Exception as e:
             logger.error(f"Supabase increment_usage error: {e}")
 
-    # Fallback memory
-    if user_id not in _memory_usage or _memory_usage[user_id]["date"] != today:
-        _memory_usage[user_id] = {"date": today, "count": 0, "study_count": 0}
-    _memory_usage[user_id]["count"] += 1
+    # Fallback memory - use composite key
+    memory_key = f"{norm_user_id}:{action_type}"
+    if memory_key not in _memory_usage or _memory_usage[memory_key]["date"] != today:
+        _memory_usage[memory_key] = {"date": today, "count": 0}
+    _memory_usage[memory_key]["count"] += amount
 
 
 # ===== PREMIUM GATING: STUDY MODE LIMIT =====
@@ -158,16 +218,23 @@ def increment_study_mode_usage(user_id: int):
     _memory_usage[user_id]["study_count"] += 1
 
 
-def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str, doc_type: str = "file"):
-    """Save document to user's session."""
+def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str,
+                  doc_type: str = "file", flashcards=None, quiz_questions=None, content=None):
+    """Save document to user's session.
+
+    Args:
+        flashcards: List of flashcard objects [{front, back, difficulty}]
+        quiz_questions: List of quiz question objects
+        content: RAG content dict with chunks and embeddings
+    """
     timestamp = time.time()
-    
+
     # Auto-activate
     set_active_doc(user_id, doc_id)
-    
+
     if supabase:
         try:
-            supabase.table("documents").insert({
+            data = {
                 "id": doc_id,
                 "user_id": user_id,
                 "name": name,
@@ -175,10 +242,17 @@ def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str,
                 "summary": summary,
                 "doc_type": doc_type,
                 "timestamp": timestamp
-            }).execute()
-            
+            }
+            if flashcards is not None:
+                data["flashcards"] = flashcards
+            if quiz_questions is not None:
+                data["quiz_questions"] = quiz_questions
+            if content is not None:
+                data["content"] = content
+
+            supabase.table("documents").insert(data).execute()
+
             # Clean up old documents (keep last MAX_DOCS_PER_USER)
-            # Fetch all user documents ordered by timestamp desc
             docs = supabase.table("documents").select("id").eq("user_id", user_id).order("timestamp", desc=True).execute()
             if len(docs.data) > MAX_DOCS_PER_USER:
                 ids_to_delete = [d["id"] for d in docs.data[MAX_DOCS_PER_USER:]]
@@ -192,14 +266,21 @@ def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str,
     if user_id not in _memory_documents:
         _memory_documents[user_id] = OrderedDict()
 
-    _memory_documents[user_id][doc_id] = {
+    doc_data = {
         "name": name,
         "text": "[Đã dọn dẹp nội dung gốc để bảo mật nha! 🔒]",
         "summary": summary,
         "timestamp": timestamp,
-        "type": doc_type,
-        "id": doc_id
+        "doc_type": doc_type,
     }
+    if flashcards is not None:
+        doc_data["flashcards"] = flashcards
+    if quiz_questions is not None:
+        doc_data["quiz_questions"] = quiz_questions
+    if content is not None:
+        doc_data["content"] = content
+
+    _memory_documents[user_id][doc_id] = doc_data
 
     while len(_memory_documents[user_id]) > MAX_DOCS_PER_USER:
         _memory_documents[user_id].popitem(last=False)
@@ -310,6 +391,48 @@ def delete_document_by_id(user_id: int, doc_id: str) -> bool:
             except Exception:
                 pass
         _memory_active_doc.pop(user_id, None)
+
+
+def get_document_by_id(user_id: int | str, doc_id: str) -> dict | None:
+    """Lấy document theo ID từ DB hoặc memory."""
+    user_id_int = int(user_id) if str(user_id).isdigit() else user_id
+    if supabase:
+        try:
+            response = supabase.table("documents")\
+                .select("*")\
+                .eq("id", doc_id)\
+                .eq("user_id", user_id_int)\
+                .execute()
+            if response.data:
+                return response.data[0]
+        except Exception as e:
+            logger.error(f"Supabase get_document_by_id error: {e}")
+
+    # Fallback memory
+    if user_id_int in _memory_documents and doc_id in _memory_documents[user_id_int]:
+        doc = _memory_documents[user_id_int][doc_id].copy()
+        doc["id"] = doc_id
+        return doc
+    return None
+
+
+def save_document_content(doc_id: str, content: dict):
+    """Lưu RAG content (chunks, embeddings) vào document."""
+    if supabase:
+        try:
+            supabase.table("documents")\
+                .update({"content": content})\
+                .eq("id", doc_id)\
+                .execute()
+        except Exception as e:
+            logger.error(f"Supabase save_document_content error: {e}")
+            # Still save to memory as fallback
+
+    # Update memory (find in any user's documents)
+    for user_docs in _memory_documents.values():
+        if doc_id in user_docs:
+            user_docs[doc_id]["content"] = content
+            break
 
     # Cleanup Q&A counter và temp text
     qa_key = f"{user_id}:{doc_id}"
@@ -613,3 +736,80 @@ def _cleanup_expired_study_sessions():
 
 
 
+
+
+# ===== COIN SYSTEM METHODS =====
+
+def get_coin_balance(user_id: int | str) -> int:
+    """Lấy số dư Coin của user."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            result = supabase.table("user_usage").select("coin_balance").eq("user_id", norm_user_id).single().execute()
+            return result.data.get("coin_balance", 0) if result.data else 0
+        except Exception as e:
+            logger.error(f"Supabase get_coin_balance error: {e}")
+
+    # Fallback memory
+    return _memory_usage.get(norm_user_id, {}).get("coin_balance", 0)
+
+
+def update_coin_balance(user_id: int | str, new_balance: int) -> bool:
+    """Cập nhật số dư Coin."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            supabase.table("user_usage").update({"coin_balance": new_balance}).eq("user_id", norm_user_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Supabase update_coin_balance error: {e}")
+
+    # Fallback memory
+    if norm_user_id not in _memory_usage:
+        _memory_usage[norm_user_id] = {"date": time.strftime("%Y-%m-%d"), "count": 0, "study_count": 0}
+    _memory_usage[norm_user_id]["coin_balance"] = new_balance
+    return True
+
+
+def log_coin_transaction(user_id: int | str, amount: int, trans_type: str, reason: str, balance_after: int):
+    """Ghi log giao dịch Coin."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            supabase.table("coin_transactions").insert({
+                "user_id": norm_user_id,
+                "amount": amount,
+                "type": trans_type,
+                "reason": reason,
+                "balance_after": balance_after,
+            }).execute()
+        except Exception as e:
+            logger.error(f"Supabase log_coin_transaction error: {e}")
+
+
+def get_coin_transactions(user_id: int | str, limit: int = 20):
+    """Lấy lịch sử giao dịch Coin."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            result = supabase.table("coin_transactions").select("*").eq("user_id", norm_user_id).order("created_at", desc=True).limit(limit).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Supabase get_coin_transactions error: {e}")
+
+    return []
+
+
+def get_user_by_zalo_id(zalo_user_id: str) -> dict | None:
+    """Lấy user theo Zalo ID."""
+    if supabase:
+        try:
+            result = supabase.table("user_usage").select("*").eq("user_id", zalo_user_id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Supabase get_user_by_zalo_id error: {e}")
+    return None

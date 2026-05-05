@@ -5,3 +5,20 @@ temp/
 patch_bot.py
 .gemini/
 data/tokens.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test files (không cần trên production)
+test_*.py
+tests/
+quick_test.py
+run_tests.bat
+test_api.ps1
+pytest.ini
+scratch/
+
+# Docs không cần trên server
+*.md.resolved
+lesions_learned.md

@@ -1,0 +1,26 @@
+{
+  "mini_app": {
+    "name": "Chat Hay AI",
+    "description": "AI Assistant học tập - Tóm tắt, Quiz, Flashcard từ tài liệu",
+    "icon": "https://chat-hay-ai.com/icon-128.png",
+    "developer": {
+      "name": "Chat Hay Team",
+      "email": "support@chathay.vn",
+      "website": "https://chathay.vn"
+    },
+    "permissions": [
+      "user_info",
+      "user_phone",
+      "user_email"
+    ],
+    "homepage": "https://chathay.vn/mini-app",
+    "oauth": {
+      "app_id": "1534343952928885811"
+    },
+    "theme": {
+      "primary_color": "#0066FF",
+      "secondary_color": "#FF6B35"
+    },
+    "orientation": "portrait"
+  }
+}

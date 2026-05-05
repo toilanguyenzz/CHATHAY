@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -47,6 +48,11 @@ from services.db_service import (
     delete_user_data,
     delete_document_by_id,
     get_user_docs,
+    get_supabase_client,
+    check_rate_limit,
+    increment_usage,
+    get_document_by_id,
+    save_document_content,
     get_active_doc,
     get_active_doc_id,
     save_document_text_temp,
@@ -62,18 +68,28 @@ from services.db_service import (
     check_study_mode_limit,
     increment_study_mode_usage,
     get_study_mode_count_today,
+    save_document,
 )
+from services.rag_service import rag_qa_pipeline
 from services.study_engine import (
     QuizSession,
     FlashcardSession,
     time_to_readable,
 )
-from services.study_analytics import (
-    increment_sessions_started,
-    record_quiz_completion,
-    record_flashcard_completion,
+from services.coin_service import (
+    get_coin_balance,
+    add_coins,
+    spend_coins,
+    reward_quiz_complete,
+    reward_streak,
+    reward_share,
+    get_transaction_history,
+    COIN_PACKAGES,
 )
-from prompts.study_prompts import GENERATE_QUIZ_PROMPT, GENERATE_FLASHCARD_PROMPT
+from services.zalopay_service import (
+    create_zalopay_order,
+    verify_zalopay_callback,
+)
 
 PRODUCT_NAME = config.PRODUCT_NAME
 
@@ -1283,27 +1299,23 @@ async def handle_files_command(user_id: str):
 # FASTAPI APP SETUP
 # ═══════════════════════════════════════════════════════════════
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("=" * 60)
-    logger.info("%s v4.0 — Zalo OA Webhook Server starting...", PRODUCT_NAME)
-    logger.info("OA Token set: %s", "YES" if ZALO_OA_ACCESS_TOKEN else "NO")
-    logger.info("OA Secret set: %s", "YES" if ZALO_OA_SECRET else "NO")
-    logger.info("App ID: %s", ZALO_APP_ID)
-    logger.info("Features: OCR ✓ | TTS ✓ | Doc Classification ✓")
-    logger.info("=" * 60)
+app = FastAPI(title=f"{PRODUCT_NAME} — Trợ lý đọc tài liệu AI")
 
-    # Khởi động background schedulers
-    token_refresh_task = asyncio.create_task(_proactive_token_refresh_loop())
+@app.middleware("http")
+async def catch_exceptions(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-    yield
-
-    # Cleanup
-    token_refresh_task.cancel()
-    logger.info("Server shutting down...")
-
-
-app = FastAPI(title=f"{PRODUCT_NAME} — Trợ lý đọc tài liệu AI", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.mount("/audio", StaticFiles(directory=config.AUDIO_DIR), name="audio")
 
 HOMEPAGE_HTML = f"""<!DOCTYPE html>
@@ -1353,7 +1365,9 @@ VERIFIER_HTML = f"""<!DOCTYPE html>
 # HTTP ROUTES
 # ═══════════════════════════════════════════════════════════════
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/test")
+async def test_endpoint():
+    return {"status": "ok", "message": "Server is running"}
 async def health():
     return HTMLResponse(content=HOMEPAGE_HTML, status_code=200)
 
@@ -2486,11 +2500,640 @@ async def start_study_session_by_mode(user_id: str, mode: str, doc_text: str):
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
+
+# ═════════════════════════════════════════════════════════════
+# MINI APP API ENDPOINTS
+# ═════════════════════════════════════════════════════════════
+
+@app.post("/api/miniapp/auth")
+async def miniapp_auth(request: Request):
+    """Exchange Zalo access token for user_id."""
+    try:
+        body = await request.json()
+        access_token = body.get("access_token", "")
+        if not access_token:
+            return JSONResponse(content={"error": "Missing access_token"}, status_code=400)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"https://graph.zalo.me/v2.0/me?access_token={access_token}&fields=id,name"
+            )
+            if resp.status_code != 200:
+                return JSONResponse(content={"error": "Invalid access token"}, status_code=401)
+            data = resp.json()
+            user_id = data.get("id")
+            if not user_id:
+                return JSONResponse(content={"error": "Cannot get user_id"}, status_code=401)
+            return JSONResponse(content={"user_id": user_id, "name": data.get("name", "")})
+    except Exception as exc:
+        logger.error("Miniapp auth error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/documents")
+async def miniapp_get_documents(request: Request):
+    """List documents for the authenticated user."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+        docs = get_user_docs(user_id)
+        result = []
+        for d in docs:
+            result.append({
+                "id": d.get("doc_id", ""),
+                "name": d.get("file_name", "Untitled"),
+                "doc_type": d.get("doc_type", "pdf"),
+                "timestamp": d.get("created_at", 0),
+                "summary": d.get("summary_text", ""),
+            })
+        return JSONResponse(content=result)
+    except Exception as exc:
+        logger.error("Miniapp get documents error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/documents")
+async def miniapp_upload_document(request: Request):
+    """Upload and process a document for Mini App."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Parse multipart form data
+        form = await request.form()
+        file = form.get("file")
+        if not file:
+            return JSONResponse(content={"error": "Missing file"}, status_code=400)
+
+        filename = file.filename or "document"
+        file_type = get_file_type(filename)
+
+        if file_type == "unknown":
+            return JSONResponse(content={"error": "Chỉ hỗ trợ PDF, Word (.docx), hoặc ảnh."}, status_code=400)
+
+        # Read file content
+        content = await file.read()
+
+        if len(content) > config.MAX_FILE_SIZE_MB * 1024 * 1024:
+            return JSONResponse(content={"error": f"File quá lớn! Tối đa {config.MAX_FILE_SIZE_MB}MB."}, status_code=400)
+
+        # Save temp file
+        temp_filename = f"{uuid.uuid4().hex}_{filename}"
+        file_path = os.path.join(config.TEMP_DIR, temp_filename)
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            # Extract text / summarize
+            doc_text = ""
+            if file_type == "image":
+                structured = await summarize_image_structured(file_path)
+                # Extract OCR text for RAG Q&A
+                doc_text = await extract_ocr_text(file_path)
+            else:
+                text, _ft = await extract_text(file_path, config.MAX_PAGES)
+                if not text and _ft == "pdf":
+                    # OCR fallback for scanned/handwritten PDF
+                    page_images = await convert_pdf_to_images(file_path, max_pages=10)
+                    if not page_images:
+                        return JSONResponse(content={"error": "Không thể đọc file PDF này (scan/ảnh)."}, status_code=400)
+                    try:
+                        structured = await summarize_pdf_images_structured(page_images)
+                    finally:
+                        for img_path in page_images:
+                            try:
+                                os.remove(img_path)
+                            except OSError:
+                                pass
+                elif not text:
+                    return JSONResponse(content={"error": "Không đọc được nội dung file này."}, status_code=400)
+                else:
+                    doc_text = text
+                    structured = await summarize_text_structured(text)
+
+            if structured.get("error"):
+                return JSONResponse(content={"error": str(structured["error"])}, status_code=500)
+
+            # Generate doc_id
+            doc_id = str(uuid.uuid4())
+
+            # Save document to DB (including flashcards and quiz)
+            save_document(
+                user_id=user_id,
+                doc_id=doc_id,
+                name=filename,
+                text=doc_text or "[File không có text content]",
+                summary=structured.get("summary", ""),
+                doc_type=file_type,
+                flashcards=structured.get("flashcards", []),
+                quiz_questions=structured.get("quiz", [])
+            )
+
+            # 💰 CHARGE COINS for file processing (unless first-time free?)
+            # Check if user has free quota first
+            can_process_free = check_study_mode_limit(user_id)
+            if not can_process_free:
+                # User exceeded free limit, charge coins
+                success = await spend_coins(user_id, FILE_PROCESS_COST, 'file_process', {'doc_id': doc_id})
+                if not success:
+                    # Insufficient coins - delete document and return error
+                    delete_document_by_id(user_id, doc_id)
+                    return JSONResponse(content={
+                        "error": "Insufficient coins. Please top up!",
+                        "code": "INSUFFICIENT_COINS",
+                        "required": FILE_PROCESS_COST
+                    }, status_code=402)
+
+            # Save original text temporarily for Q&A (24h TTL)
+            if doc_text:
+                save_document_text_temp(user_id, doc_id, doc_text)
+
+            logger.info("✅ Miniapp upload success: user=%s, doc=%s, type=%s, flashcards=%s, quiz=%s",
+                        user_id[:8], doc_id[:8], file_type,
+                        len(structured.get("flashcards", [])), len(structured.get("quiz", [])))
+
+            return JSONResponse(content={
+                "id": doc_id,
+                "name": filename,
+                "doc_type": file_type,
+                "timestamp": time.time(),
+                "summary": structured.get("summary", ""),
+                "flashcard_count": len(structured.get("flashcards", [])),
+                "quiz_count": len(structured.get("quiz", [])),
+            }, status_code=201)
+
+        finally:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+
+    except Exception as exc:
+        logger.error("Miniapp upload document error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/chat/ask")
+async def miniapp_chat_ask(request: Request):
+    """RAG-based Q&A endpoint cho Mini App."""
+    try:
+        body = await request.json()
+        doc_id = body.get("document_id", "")
+        question = body.get("question", "")
+        user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
+
+        if not doc_id or not question or not user_id:
+            return JSONResponse(
+                content={"error": "Missing document_id, question, or user_id"},
+                status_code=400
+            )
+
+        # Kiểm tra Q&A limit per document
+        qa_count = get_qa_count(user_id, doc_id)
+        if qa_count >= QA_LIMIT_PER_DOC:
+            return JSONResponse(content={
+                "error": "Đã hết lượt hỏi cho tài liệu này (tối đa 5 câu). Gửi lại file để mở phiên mới.",
+                "code": "QA_LIMIT_EXCEEDED",
+                "limit": QA_LIMIT_PER_DOC
+            }, status_code=429)
+
+        # Kiểm tra daily quota
+        if not check_rate_limit(user_id):
+            return JSONResponse(content={
+                "error": "Đã hết lượt hỏi hôm nay. Vui lòng thử lại sau.",
+                "code": "DAILY_LIMIT_EXCEEDED",
+                "limit": config.FREE_DAILY_LIMIT
+            }, status_code=429)
+
+        # Gọi RAG pipeline
+        logger.info("RAG Q&A: user=%s, doc=%s, question=%s", user_id[:8], doc_id[:8], question[:50])
+        result = await rag_qa_pipeline(user_id, doc_id, question, top_k=5)
+
+        if "error" in result:
+            error_msg = result["error"]
+            # Document not found/expired → 404
+            if "not found" in error_msg.lower() or "expired" in error_msg.lower():
+                status_code = 404
+            else:
+                status_code = 500
+            return JSONResponse(content={"error": error_msg}, status_code=status_code)
+
+        # Increment counters
+        increment_qa_count(user_id, doc_id)
+        increment_usage(user_id)  # Daily quota
+
+        return JSONResponse(content={
+            "answer": result["answer"],
+            "sources": result["sources"]
+        })
+
+    except Exception as exc:
+        logger.error("Miniapp chat ask error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+
+@app.get("/api/miniapp/documents/{doc_id}/flashcards")
+async def miniapp_get_flashcards(doc_id: str, request: Request):
+    """Get flashcards for a document."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Query flashcards from documents table
+        if supabase:
+            result = supabase.table("documents").select("flashcards").eq("id", doc_id).eq("user_id", user_id).execute()
+            if not result.data:
+                return JSONResponse(content={"error": "Document not found"}, status_code=404)
+            flashcards = result.data[0].get("flashcards", [])
+            return JSONResponse(content=flashcards)
+
+        # Memory fallback
+        if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
+            return JSONResponse(content=_memory_documents[user_id][doc_id].get("flashcards", []))
+
+        return JSONResponse(content={"error": "Document not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("Miniapp get flashcards error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/documents/{doc_id}/quiz")
+async def miniapp_get_quiz(doc_id: str, request: Request):
+    """Get quiz questions for a document."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Query quiz questions from documents table
+        if supabase:
+            result = supabase.table("documents").select("quiz_questions").eq("id", doc_id).eq("user_id", user_id).execute()
+            if not result.data:
+                return JSONResponse(content={"error": "Document not found"}, status_code=404)
+            quiz_questions = result.data[0].get("quiz_questions", [])
+            return JSONResponse(content=quiz_questions)
+
+        # Memory fallback
+        if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
+            return JSONResponse(content=_memory_documents[user_id][doc_id].get("quiz_questions", []))
+
+        return JSONResponse(content={"error": "Document not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("Miniapp get quiz error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/quiz/start")
+async def miniapp_quiz_start(request: Request):
+    """Start a quiz session for Mini App."""
+    try:
+        body = await request.json()
+        doc_id = body.get("doc_id", "")
+        user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
+        if not doc_id or not user_id:
+            return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
+        doc_text = get_document_text_temp(user_id, doc_id)
+        if not doc_text:
+            return JSONResponse(content={"error": "Document not found"}, status_code=404)
+        prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
+        quiz_json_str = await _call_with_smart_routing(
+            prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+        )
+        quiz_data = json.loads(quiz_json_str)
+        questions = quiz_data.get("questions", [])
+        if not questions:
+            return JSONResponse(content={"error": "Cannot generate quiz"}, status_code=500)
+        session = QuizSession(questions=questions, doc_id=doc_id)
+        session.start()
+        save_study_session(user_id, doc_id, "quiz", session.to_dict())
+        first_q = session.get_current_question()
+        return JSONResponse(content={
+            "session_id": session.session_id,
+            "doc_id": doc_id,
+            "current_idx": session.current_idx,
+            "score": session.score,
+            "total": session.total_questions,
+            "question": {
+                "id": first_q["id"],
+                "question": first_q["question"],
+                "options": [o["label"] for o in first_q["options"]],
+                "correct": next((i for i, o in enumerate(first_q["options"]) if o.get("isCorrect")), 0),
+                "explanation": first_q.get("explanation", ""),
+                "difficulty": first_q.get("difficulty", "medium"),
+            },
+        })
+    except Exception as exc:
+        logger.error("Miniapp quiz start error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/quiz/answer")
+async def miniapp_quiz_answer(request: Request):
+    """Submit a quiz answer from Mini App."""
+    try:
+        body = await request.json()
+        session_id = body.get("session_id", "")
+        answer = body.get("answer", "")
+        user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
+        if not session_id or not answer:
+            return JSONResponse(content={"error": "Missing session_id or answer"}, status_code=400)
+        session_record = load_study_session(user_id)
+        if not session_record or session_record["session_type"] != "quiz":
+            return JSONResponse(content={"error": "No active quiz session"}, status_code=404)
+        session = QuizSession.from_dict(session_record["data"])
+        result = session.process_answer(answer)
+        save_study_session(user_id, session.doc_id, "quiz", session.to_dict())
+        response = {
+            "is_correct": result["is_correct"],
+            "correct_answer": result["correct_answer"],
+            "explanation": result["explanation"],
+            "is_last": result["is_last"],
+            "next_action": result["next_action"],
+            "feedback_text": result["feedback_text"],
+        }
+        if not result["is_last"]:
+            q = session.get_current_question()
+            if q:
+                response["next_question"] = {
+                    "id": q["id"],
+                    "question": q["question"],
+                    "options": [o["label"] for o in q["options"]],
+                    "correct": next((i for i, o in enumerate(q["options"]) if o.get("isCorrect")), 0),
+                    "explanation": q.get("explanation", ""),
+                    "difficulty": q.get("difficulty", "medium"),
+                }
+        if result["is_last"]:
+            clear_study_session(user_id)
+            final = session.get_final_score()
+            record_quiz_completion(user_id, final["correct"], final["total"], final.get("time_seconds", 0))
+
+            # 🎁 AUTO-REWARD: Quiz completion (>=70% correct)
+            reward_amount = await reward_quiz_complete(user_id, final["correct"], final["total"])
+            if reward_amount > 0:
+                logger.info("🎉 Quiz reward: user %s earned %s coins (score: %s/%s)",
+                            user_id[:8], reward_amount, final["correct"], final["total"])
+
+            response["final_score"] = final
+        return JSONResponse(content=response)
+    except Exception as exc:
+        logger.error("Miniapp quiz answer error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/flashcard/start")
+async def miniapp_flashcard_start(request: Request):
+    """Start a flashcard session for Mini App."""
+    try:
+        body = await request.json()
+        doc_id = body.get("doc_id", "")
+        user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
+        if not doc_id or not user_id:
+            return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
+        doc_text = get_document_text_temp(user_id, doc_id)
+        if not doc_text:
+            return JSONResponse(content={"error": "Document not found"}, status_code=404)
+        prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
+        flashcard_json_str = await _call_with_smart_routing(
+            prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+        )
+        flashcard_data = json.loads(flashcard_json_str)
+        flashcards = flashcard_data.get("flashcards", [])
+        if not flashcards:
+            return JSONResponse(content={"error": "Cannot generate flashcards"}, status_code=500)
+        session = FlashcardSession(flashcards=flashcards, doc_id=doc_id)
+        save_study_session(user_id, doc_id, "flashcard", session.to_dict())
+        card = session.get_current_card()
+        return JSONResponse(content={
+            "session_id": session.session_id,
+            "doc_id": doc_id,
+            "current_idx": session.current_idx,
+            "total": session.total_cards,
+            "card": {"id": f"{doc_id}_{session.current_idx}", "front": card["front"], "back": card["back"]},
+        })
+    except Exception as exc:
+        logger.error("Miniapp flashcard start error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/flashcard/review")
+async def miniapp_flashcard_review(request: Request):
+    """Review a flashcard from Mini App."""
+    try:
+        body = await request.json()
+        session_id = body.get("session_id", "")
+        remembered = body.get("remembered", False)
+        user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
+        session_record = load_study_session(user_id)
+        if not session_record or session_record["session_type"] != "flashcard":
+            return JSONResponse(content={"error": "No active flashcard session"}, status_code=404)
+        session = FlashcardSession.from_dict(session_record["data"])
+        session.record_review(remembered)
+        save_study_session(user_id, session.doc_id, "flashcard", session.to_dict())
+        response = {"is_done": False}
+        if session.next_card():
+            card = session.get_current_card()
+            response["next_card"] = {"id": f"{session.doc_id}_{session.current_idx}", "front": card["front"], "back": card["back"]}
+        else:
+            response["is_done"] = True
+            response["summary"] = session.get_summary()
+            clear_study_session(user_id)
+            record_flashcard_completion(user_id, response["summary"]["reviewed"], response["summary"]["remembered"])
+
+            # 🎁 AUTO-REWARD: Flashcard completion (small reward per session)
+            # Give 10 coins for completing a flashcard session (any size)
+            reward_amount = await add_coins(user_id, 10, 'flashcard_complete', {
+                'reviewed': response["summary"]["reviewed"],
+                'remembered': response["summary"]["remembered"]
+            })
+            logger.info("🎉 Flashcard reward: user %s earned %s coins (reviewed: %s)",
+                        user_id[:8], reward_amount, response["summary"]["reviewed"])
+
+        return JSONResponse(content=response)
+    except Exception as exc:
+        logger.error("Miniapp flashcard review error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/documents/{doc_id}/progress")
+async def miniapp_get_progress(doc_id: str, request: Request):
+    """Get learning progress for a document."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+        return JSONResponse(content={
+            "summary_done": True, "flashcard_done": 0, "flashcard_total": 0,
+            "quiz_done": 0, "quiz_total": 0, "overall_percent": 0,
+        })
+    except Exception as exc:
+        logger.error("Miniapp progress error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/coin/balance")
+async def miniapp_coin_balance(request: Request):
+    """Get user's coin balance."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+        balance = await get_coin_balance(user_id)
+        return JSONResponse(content={"balance": balance, "today_usage": 0, "study_sessions_today": 0})
+    except Exception as exc:
+        logger.error("Miniapp coin balance error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/coin/earn")
+async def miniapp_coin_earn(request: Request):
+    """Earn coins (admin/reward only)."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
+        amount = int(body.get("amount", 0))
+        reason = body.get("reason", "reward")
+        metadata = body.get("metadata", {})
+
+        if not user_id or amount <= 0:
+            return JSONResponse(content={"error": "Invalid request"}, status_code=400)
+
+        new_balance = await add_coins(user_id, amount, reason, metadata)
+        return JSONResponse(content={"success": True, "new_balance": new_balance})
+    except Exception as exc:
+        logger.error("Miniapp coin earn error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/coin/spend")
+async def miniapp_coin_spend(request: Request):
+    """Spend coins (for purchases)."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
+        amount = int(body.get("amount", 0))
+        reason = body.get("reason", "spend")
+        metadata = body.get("metadata", {})
+
+        if not user_id or amount <= 0:
+            return JSONResponse(content={"error": "Invalid request"}, status_code=400)
+
+        success = await spend_coins(user_id, amount, reason, metadata)
+        if success:
+            balance = await get_coin_balance(user_id)
+            return JSONResponse(content={"success": True, "new_balance": balance})
+        else:
+            return JSONResponse(content={"error": "Insufficient coins", "code": "INSUFFICIENT_FUNDS"}, status_code=400)
+    except Exception as exc:
+        logger.error("Miniapp coin spend error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/share")
+async def miniapp_share(request: Request):
+    """Record a share action and reward user with coins."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
+        share_type = body.get("type", "quiz_result")  # quiz_result, flashcard, document
+
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Award coins for sharing (anti-spam: one reward per share action)
+        reward_amount = await reward_share(user_id)
+        logger.info("🎉 Share reward: user %s earned %s coins (type: %s)",
+                    user_id[:8], reward_amount, share_type)
+
+        return JSONResponse(content={"success": True, "coins_earned": reward_amount})
+    except Exception as exc:
+        logger.error("Miniapp share error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/coin/history")
+async def miniapp_coin_history(request: Request):
+    """Get coin transaction history."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        limit = int(request.query_params.get("limit", 20))
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        history = await get_transaction_history(user_id, limit)
+        return JSONResponse(content=history)
+    except Exception as exc:
+        logger.error("Miniapp coin history error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/zalopay/create")
+async def miniapp_zalopay_create(request: Request):
+    """Create ZaloPay order for coin top-up."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
+        package_id = body.get("package_id", "")
+
+        if not user_id or not package_id:
+            return JSONResponse(content={"error": "Missing user_id or package_id"}, status_code=400)
+
+        result = await create_zalopay_order(user_id, package_id, "https://zalo.me/your_oa_id")
+        if "error" in result:
+            return JSONResponse(content=result, status_code=400)
+        return JSONResponse(content=result)
+    except Exception as exc:
+        logger.error("ZaloPay create error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/zalopay/callback")
+async def miniapp_zalopay_callback(request: Request):
+    """Handle ZaloPay payment callback."""
+    try:
+        result = await verify_zalopay_callback(request)
+        if "error" in result:
+            return JSONResponse(content=result, status_code=400)
+        return JSONResponse(content=result)
+    except Exception as exc:
+        logger.error("ZaloPay callback error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.delete("/api/miniapp/documents/{doc_id}")
+async def miniapp_delete_document(doc_id: str, request: Request):
+    """Delete a document."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+        delete_document_by_id(user_id, doc_id)
+        return JSONResponse(content={"status": "ok"})
+    except Exception as exc:
+        logger.error("Miniapp delete document error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+# @app.post("/api/miniapp/chat/ask")
+# async def miniapp_chat_ask(request: Request):
+#     """Chat với tài liệu sử dụng RAG - Tạm disable."""
+#     return JSONResponse(content={"answer": "RAG chưa sẵn sàng", "sources": []}, status_code=503)
+
+
 if __name__ == "__main__":
-    uvicorn.run(
-        "zalo_webhook:zalo_webhook",
-        host=config.HOST,
-        port=config.PORT,
-        reload=config.DEBUG,
-    )
+    try:
+        logger.info("🚀 Starting server on %s:%s", config.HOST, config.PORT)
+        uvicorn.run(
+            "zalo_webhook:app",
+            host=config.HOST,
+            port=config.PORT,
+            reload=False,
+            log_level="info"
+        )
+    except Exception as e:
+        logger.error("Failed to start server: %s", e, exc_info=True)
+        raise
 

@@ -3,6 +3,7 @@
 
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Fix Unicode on Windows
@@ -30,6 +31,7 @@ C. x₁=-2, x₂=-3
 D. x₁=3, x₂=2
 """
 
+@pytest.mark.asyncio
 async def test_document_type_detection():
     print("=" * 70)
     print("TEST: summarize_text_structured() -> document_type")
