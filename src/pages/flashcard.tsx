@@ -4,6 +4,7 @@ import { useParams } from "react-router-dom";
 import { studyService } from "../services/studyService";
 import { documentService } from "../services/documentService";
 import { useAuth } from "../hooks/useAuth";
+import { EmptyState } from "../components/EmptyState";
 
 const diffConfig: Record<string, { label: string; color: string; bg: string; emoji: string }> = {
   easy: { label: "Dễ", color: "#16A34A", bg: "#DCFCE7", emoji: "🟢" },
@@ -18,10 +19,26 @@ function FlashcardPage() {
   const [cards, setCards] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [mastered, setMastered] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [reviewResult, setReviewResult] = useState<any>(null);
+  const [isShuffled, setIsShuffled] = useState(false);
   const touchStartX = useRef(0);
+
+  // Shuffle cards
+  const shuffleCards = () => {
+    setCards(prev => {
+      const shuffled = [...prev];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      return shuffled;
+    });
+    setCurrentIndex(0);
+    setIsFlipped(false);
+    setIsShuffled(true);
+  };
 
   useEffect(() => {
     if (!user_id) return;
@@ -51,9 +68,11 @@ function FlashcardPage() {
   if (loading) {
     return (
       <Page className="ch-page">
-        <Box className="ch-container" style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" }}>
-          <Text className="ch-caption">Đang tải flashcard...</Text>
-        </Box>
+        <EmptyState
+          emoji="⏳️"
+          title="Đang tải flashcard..."
+          description="Vui lòng chờ trong giây lát"
+        />
       </Page>
     );
   }
@@ -61,14 +80,15 @@ function FlashcardPage() {
   if (cards.length === 0) {
     return (
       <Page className="ch-page">
-        <Box className="ch-container" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh", gap: 16 }}>
-          <Text style={{ fontSize: 48 }}>📭</Text>
-          <Text className="ch-heading-lg">Chưa có Flashcard</Text>
-          <Text className="ch-caption">Tải tài liệu để tự động tạo flashcard nhé!</Text>
-          <Box className="ch-btn-primary" onClick={() => navigate("/file-processing")} style={{ marginTop: 8 }}>
-            <span>Tải tài liệu</span>
-          </Box>
-        </Box>
+        <EmptyState
+          emoji="📭"
+          title="Chưa có Flashcard"
+          description="Tải tài liệu để tự động tạo flashcard nhé!"
+          actionLabel="Tải tài liệu"
+          onAction={() => navigate("/file-processing")}
+          secondaryActionLabel="Về trang chủ"
+          onSecondaryAction={() => navigate("/")}
+        />
       </Page>
     );
   }
@@ -83,15 +103,6 @@ function FlashcardPage() {
     setTimeout(() => {
       setCurrentIndex(i => dir === "next" ? Math.min(i + 1, total - 1) : Math.max(i - 1, 0));
     }, 150);
-  };
-
-  const toggleMastered = () => {
-    setMastered(prev => {
-      const next = new Set(prev);
-      if (next.has(card.id)) next.delete(card.id);
-      else next.add(card.id);
-      return next;
-    });
   };
 
   const handleTouchStart = (e: React.TouchEvent) => { touchStartX.current = e.touches[0].clientX; };
@@ -130,7 +141,11 @@ function FlashcardPage() {
           </Box>
           <Box style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
             <Text className="ch-caption">{currentIndex + 1} / {total}</Text>
-            <Text className="ch-caption">✅ {mastered.size} đã thuộc</Text>
+            {reviewResult?.next_review_label && (
+              <Text className="ch-caption" style={{ color: "var(--color-primary)" }}>
+                📅 {reviewResult.next_review_label}
+              </Text>
+            )}
           </Box>
         </Box>
 
@@ -170,24 +185,60 @@ function FlashcardPage() {
           ))}
         </Box>
 
-        {/* Controls */}
+        {/* SM-2 Rating Controls (shown when card is flipped) */}
+        {isFlipped && (
+          <Box style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: 8 }}>
+            <Text style={{ fontSize: "var(--font-size-xs)", fontWeight: 600, color: "var(--color-text-tertiary)", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.05em" }}>Đánh giá độ nhớ của bạn:</Text>
+            <Box style={{ display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
+              {[
+                { rating: 'again', label: 'Again', time: '1m', color: '#DC2626', bg: '#FEE2E2', emoji: '🔴' },
+                { rating: 'hard', label: 'Hard', time: '10m', color: '#D97706', bg: '#FEF3C7', emoji: '🟡' },
+                { rating: 'good', label: 'Good', time: '1d', color: '#16A34A', bg: '#DCFCE7', emoji: '🟢' },
+                { rating: 'easy', label: 'Easy', time: '4d', color: '#2563EB', bg: '#DBEAFE', emoji: '🔵' },
+              ].map(btn => (
+                <Box
+                  key={btn.rating}
+                  onClick={async () => {
+                    if (!sessionId) return;
+                    const result = await studyService.reviewFlashcard(sessionId, btn.rating as any);
+                    setReviewResult(result);
+                    setTimeout(() => {
+                      setIsFlipped(false);
+                      if (!result.is_done) {
+                        setCurrentIndex(i => Math.min(i + 1, total - 1));
+                      }
+                    }, 600);
+                  }}
+                  style={{
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                    padding: "12px 16px", borderRadius: "var(--radius-lg)",
+                    background: btn.bg, color: btn.color,
+                    border: `2px solid ${btn.color}`,
+                    cursor: "pointer", minWidth: 70, flex: 1,
+                    transition: "all 0.2s",
+                  }}
+                >
+                  <Text style={{ fontSize: 20, lineHeight: 1 }}>{btn.emoji}</Text>
+                  <Text style={{ fontSize: "var(--font-size-sm)", fontWeight: 800 }}>{btn.label}</Text>
+                  <Text style={{ fontSize: "var(--font-size-xs)", fontWeight: 600, opacity: 0.8 }}>{btn.time}</Text>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
+
+        {/* Navigation Controls */}
         <Box style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, paddingBottom: 8 }}>
           <Box className="ch-fab ch-fab--secondary" style={{ width: 50, height: 50 }} onClick={() => goTo("prev")}>
             <Icon icon="zi-chevron-left" style={{ fontSize: 22, color: "var(--color-text-secondary)" }} />
           </Box>
-          <Box className="ch-fab" style={{
-            width: 50, height: 50,
-            background: mastered.has(card?.id) ? "var(--color-success)" : "var(--color-bg-subtle)",
-            color: mastered.has(card?.id) ? "white" : "var(--color-text-secondary)",
-            boxShadow: mastered.has(card?.id) ? "0 4px 16px rgba(34, 197, 94, 0.30)" : "var(--shadow-sm)",
-            border: mastered.has(card?.id) ? "none" : "1px solid var(--color-border)",
-          }} onClick={toggleMastered}>
-            <Text style={{ fontSize: 22, lineHeight: 1 }}>{mastered.has(card?.id) ? "✅" : "☐"}</Text>
-          </Box>
           <Box className="ch-fab ch-fab--primary" style={{ width: 58, height: 58 }} onClick={() => setIsFlipped(!isFlipped)}>
             <Text style={{ fontSize: 24, lineHeight: 1 }}>🔄</Text>
           </Box>
-          <Box className="ch-fab" style={{ width: 50, height: 50, background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)" }}>
+          <Box className="ch-fab" style={{ width: 50, height: 50, background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)" }}
+            onClick={shuffleCards}
+            title="Xáo trộn thẻ"
+          >
             <Text style={{ fontSize: 20, lineHeight: 1 }}>🔀</Text>
           </Box>
           <Box className="ch-fab ch-fab--secondary" style={{ width: 50, height: 50 }} onClick={() => goTo("next")}>

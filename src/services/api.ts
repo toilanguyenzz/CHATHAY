@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "https://chathaychathay-service.onrender.com";
 
 export interface ApiResponse<T> {
   data?: T;
@@ -9,6 +9,7 @@ export interface ApiResponse<T> {
 class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
+  private userId: string | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -16,6 +17,10 @@ class ApiClient {
 
   setToken(token: string | null) {
     this.token = token;
+  }
+
+  setUserId(userId: string | null) {
+    this.userId = userId;
   }
 
   setBaseUrl(baseUrl: string) {
@@ -38,6 +43,9 @@ class ApiClient {
 
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
+    }
+    if (this.userId) {
+      headers["X-User-Id"] = this.userId;
     }
 
     const resp = await fetch(url, { ...options, headers });
@@ -66,6 +74,9 @@ class ApiClient {
     const headers: Record<string, string> = {};
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
+    }
+    if (this.userId) {
+      headers["X-User-Id"] = this.userId;
     }
     const resp = await fetch(url, {
       method: "POST",

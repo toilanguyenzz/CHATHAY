@@ -1,0 +1,16 @@
+{
+  "app": {
+    "title": "Chat Hay",
+    "headerTitle": "Chat Hay",
+    "headerColor": "#000000",
+    "textColor": "white",
+    "statusBar": "normal",
+    "actionbar": {
+      "title": "Chat Hay"
+    }
+  },
+  "debug": true,
+  "listmpa": [
+    "src/pages/index.tsx"
+  ]
+}

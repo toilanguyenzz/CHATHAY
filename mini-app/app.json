@@ -1,0 +1,17 @@
+{
+  "name": "com.chathay.app",
+  "displayName": "Chat Hay",
+  "description": "AI-powered document assistant for Zalo Mini App",
+  "version": "1.0.0",
+  "main": "src/main.tsx",
+  "icon": "assets/icon.png",
+  "keywords": [
+    "zalo",
+    "mini-app",
+    "ai",
+    "document",
+    "summary"
+  ],
+  "author": "Chat Hay Team",
+  "license": "UNLICENSED"
+}
