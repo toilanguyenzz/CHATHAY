@@ -486,12 +486,12 @@ def _build_text_prompt(text: str, target_points: int) -> str:
   "flashcards": [ // Trích xuất 10-15 khái niệm quan trọng để học thuật ngữ/công thức
     {{"front": "Khái niệm/Từ khóa (≤ 5 từ)", "back": "Định nghĩa/Giải thích (2-3 câu)"}}
   ],
-  "quiz": [ // Tạo 5-10 câu hỏi trắc nghiệm A/B/C/D dựa trên nội dung
+  "quiz": [ // Nếu là ĐỀ THI ĐÃ CÓ ĐÁP ÁN (giáo viên in đậm **...**, bôi màu [ĐÁP ÁN: ...], hoặc khoanh tròn): Trích xuất y nguyên. NẾU CHƯA CÓ: Tự sinh 5-10 câu.
     {{
       "question": "Câu hỏi?",
       "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
-      "correct": 0, // index 0-3 (A=0, B=1)
-      "explanation": "Giải thích tại sao đúng",
+      "correct": 0, // index 0-3 (phải khớp với đáp án giáo viên đã đánh dấu nếu có)
+      "explanation": "Giải thích ngắn gọn tại sao đúng",
       "difficulty": "easy|medium|hard"
     }}
   ]

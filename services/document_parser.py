@@ -69,8 +69,40 @@ async def parse_docx(file_path: str) -> str:
         text_parts = []
 
         for paragraph in doc.paragraphs:
-            if paragraph.text.strip():
-                text_parts.append(paragraph.text)
+            if not paragraph.text.strip():
+                continue
+            
+            para_text = ""
+            for run in paragraph.runs:
+                text = run.text
+                if not text: continue
+                
+                is_bold = run.bold
+                is_highlighted = False
+                try:
+                    # Nếu có màu chữ khác đen/mặc định, hoặc có highlight nền
+                    if run.font.color and run.font.color.rgb and str(run.font.color.rgb) not in ('000000', 'AUTO'):
+                        is_highlighted = True
+                    if run.font.highlight_color:
+                        is_highlighted = True
+                except Exception:
+                    pass
+                
+                # Loại bỏ khoảng trắng thừa ở 2 đầu để bọc markdown không bị lỗi
+                stripped = text.strip()
+                if stripped:
+                    if is_highlighted:
+                        text = text.replace(stripped, f"[ĐÁP ÁN: {stripped}]")
+                    elif is_bold:
+                        text = text.replace(stripped, f"**{stripped}**")
+                        
+                para_text += text
+                
+            if para_text.strip():
+                # Xóa các khoảng trắng thừa do nối chuỗi
+                import re
+                para_text = re.sub(r'\s+', ' ', para_text)
+                text_parts.append(para_text.strip())
 
         # Also extract from tables
         for table in doc.tables:
