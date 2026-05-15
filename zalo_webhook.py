@@ -2565,6 +2565,53 @@ async def miniapp_get_documents(request: Request):
         return JSONResponse(content={"error": "Internal error"}, status_code=500)
 
 
+@app.get("/api/miniapp/documents/{doc_id}")
+async def miniapp_get_document(request: Request, doc_id: str):
+    """Get a single document by ID with full details."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        supabase = get_supabase_client()
+        if supabase:
+            result = supabase.table("documents").select("*").eq("id", doc_id).eq("user_id", user_id).single().execute()
+            if not result.data:
+                return JSONResponse(content={"error": "Document not found"}, status_code=404)
+
+            doc = result.data
+            return JSONResponse(content={
+                "id": doc.get("id"),
+                "name": doc.get("name"),
+                "doc_type": doc.get("doc_type"),
+                "timestamp": doc.get("timestamp"),
+                "summary": doc.get("summary"),
+                "text": doc.get("text"),
+                "flashcards": doc.get("flashcards", []),
+                "quiz_questions": doc.get("quiz_questions", []),
+                "content": doc.get("content"),
+            })
+
+        # Memory fallback
+        if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
+            doc = _memory_documents[user_id][doc_id]
+            return JSONResponse(content={
+                "id": doc_id,
+                "name": doc.get("name"),
+                "doc_type": doc.get("doc_type"),
+                "timestamp": doc.get("timestamp"),
+                "summary": doc.get("summary"),
+                "text": doc.get("text"),
+                "flashcards": doc.get("flashcards", []),
+                "quiz_questions": doc.get("quiz_questions", []),
+            })
+
+        return JSONResponse(content={"error": "Document not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("Miniapp get document error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
 @app.post("/api/miniapp/documents")
 async def miniapp_upload_document(request: Request):
     """Upload and process a document for Mini App."""
@@ -2672,7 +2719,10 @@ async def miniapp_upload_document(request: Request):
 
             # 📝 Generate quiz questions from document (if not already present)
             quiz_questions = structured.get("quiz", [])
-            if not quiz_questions and doc_text and len(doc_text) > 100:
+            is_education = structured.get("document_type") == "education"
+            
+            # Chỉ generate thêm quiz nếu đây là tài liệu giáo dục mà prompt chính bị sót
+            if not quiz_questions and doc_text and len(doc_text) > 100 and is_education:
                 try:
                     from prompts.study_prompts import GENERATE_QUIZ_PROMPT
                     quiz_prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
@@ -2844,17 +2894,30 @@ async def miniapp_quiz_start(request: Request):
         user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
         if not doc_id or not user_id:
             return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
-        doc_text = get_document_text_temp(user_id, doc_id)
-        if not doc_text:
-            return JSONResponse(content={"error": "Document not found"}, status_code=404)
-        prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
-        quiz_json_str = await _call_with_smart_routing(
-            prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
-        )
-        quiz_data = json.loads(quiz_json_str)
-        questions = quiz_data.get("questions", [])
+        # Check if DB already has questions
+        questions = []
+        if supabase:
+            res = supabase.table("documents").select("quiz_questions").eq("id", doc_id).eq("user_id", user_id).execute()
+            if res.data and res.data[0].get("quiz_questions"):
+                questions = res.data[0]["quiz_questions"]
+
         if not questions:
-            return JSONResponse(content={"error": "Cannot generate quiz"}, status_code=500)
+            # Generate new questions if none exist
+            doc_text = get_document_text_temp(user_id, doc_id)
+            if not doc_text:
+                return JSONResponse(content={"error": "Document not found or expired"}, status_code=404)
+            prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
+            quiz_json_str = await _call_with_smart_routing(
+                prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+            )
+            quiz_data = json.loads(quiz_json_str)
+            questions = quiz_data.get("questions", [])
+            if not questions:
+                return JSONResponse(content={"error": "Cannot generate quiz"}, status_code=500)
+            
+            # Save to DB for future use
+            if supabase:
+                supabase.table("documents").update({"quiz_questions": questions}).eq("id", doc_id).eq("user_id", user_id).execute()
         session = QuizSession(questions=questions, doc_id=doc_id)
         session.start()
         save_study_session(user_id, doc_id, "quiz", session.to_dict())
@@ -2941,17 +3004,30 @@ async def miniapp_flashcard_start(request: Request):
         user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
         if not doc_id or not user_id:
             return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
-        doc_text = get_document_text_temp(user_id, doc_id)
-        if not doc_text:
-            return JSONResponse(content={"error": "Document not found"}, status_code=404)
-        prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
-        flashcard_json_str = await _call_with_smart_routing(
-            prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
-        )
-        flashcard_data = json.loads(flashcard_json_str)
-        flashcards = flashcard_data.get("flashcards", [])
+        # Check if DB already has flashcards
+        flashcards = []
+        if supabase:
+            res = supabase.table("documents").select("flashcards").eq("id", doc_id).eq("user_id", user_id).execute()
+            if res.data and res.data[0].get("flashcards"):
+                flashcards = res.data[0]["flashcards"]
+
         if not flashcards:
-            return JSONResponse(content={"error": "Cannot generate flashcards"}, status_code=500)
+            doc_text = get_document_text_temp(user_id, doc_id)
+            if not doc_text:
+                return JSONResponse(content={"error": "Document not found or expired"}, status_code=404)
+            prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
+            flashcard_json_str = await _call_with_smart_routing(
+                prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+            )
+            flashcard_data = json.loads(flashcard_json_str)
+            flashcards = flashcard_data.get("flashcards", [])
+            if not flashcards:
+                return JSONResponse(content={"error": "Cannot generate flashcards"}, status_code=500)
+            
+            # Save to DB for future use
+            if supabase:
+                supabase.table("documents").update({"flashcards": flashcards}).eq("id", doc_id).eq("user_id", user_id).execute()
+
         session = FlashcardSession(flashcards=flashcards, doc_id=doc_id)
         save_study_session(user_id, doc_id, "flashcard", session.to_dict())
         card = session.get_current_card()

@@ -461,7 +461,7 @@ def _normalize_points(data: dict[str, Any], target_points: int | None = None) ->
 # ═══════════════════════════════════════════════════════════════
 
 def _build_text_prompt(text: str, target_points: int) -> str:
-    """Prompt tóm tắt text — chất lượng cao, có action items và gợi ý câu hỏi."""
+    """Prompt tóm tắt text — Đã gộp cả Tóm tắt, Flashcard và Quiz vào 1 lần gọi AI để tiết kiệm 70% token."""
     text = _smart_truncate(text)
 
     # Detect Excel source → add specialized hint
@@ -472,40 +472,45 @@ def _build_text_prompt(text: str, target_points: int) -> str:
 - Phân tích SỐ LIỆU cụ thể: tổng, trung bình, min, max, so sánh giữa các cột/hàng.
 - Nếu có nhiều sheet, so sánh dữ liệu giữa các sheet.
 - suggested_questions PHẢI là câu hỏi phân tích số liệu (tính tổng, so sánh, tìm max/min, xu hướng...).
-- Ví dụ: "Tổng doanh thu tháng nào cao nhất?", "So sánh chi phí Q1 và Q2?", "Ai có lương cao nhất?"
 """
 
     return f"""Hãy đọc kỹ toàn bộ tài liệu và phân tích thật chi tiết. Trả về JSON:
 
-{{"document_title": "Tên tài liệu", "overview": "2-3 câu tổng quan ngắn gọn", "document_type": "general", "points": [{{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu dưới 160 ký tự", "detail": "Đoạn văn 4-8 câu cực kỳ chi tiết"}}], "action_items": ["Việc cần làm 1", "Việc cần làm 2"], "suggested_questions": ["Câu hỏi gợi ý 1?", "Câu hỏi gợi ý 2?"]}}
+{{
+  "document_title": "Tên tài liệu",
+  "overview": "2-3 câu tổng quan ngắn gọn",
+  "document_type": "education", // Phân loại: education (nếu là bài giảng, đề thi, học tập), business (hợp đồng, hóa đơn), hoặc general
+  "points": [
+    {{"title": "Tiêu đề", "brief": "Tóm tắt 1 câu", "detail": "Đoạn văn 4-8 câu cực kỳ chi tiết"}}
+  ],
+  "flashcards": [ // Trích xuất 10-15 khái niệm quan trọng để học thuật ngữ/công thức
+    {{"front": "Khái niệm/Từ khóa (≤ 5 từ)", "back": "Định nghĩa/Giải thích (2-3 câu)"}}
+  ],
+  "quiz": [ // Tạo 5-10 câu hỏi trắc nghiệm A/B/C/D dựa trên nội dung
+    {{
+      "question": "Câu hỏi?",
+      "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+      "correct": 0, // index 0-3 (A=0, B=1)
+      "explanation": "Giải thích tại sao đúng",
+      "difficulty": "easy|medium|hard"
+    }}
+  ]
+}}
 
 ⚠️ NGÔN NGỮ BẮT BUỘC: TOÀN BỘ output phải bằng TIẾNG VIỆT CÓ DẤU.
-- TUYỆT ĐỐI KHÔNG dùng tiếng Trung Quốc (中文), tiếng Nhật, tiếng Hàn trong output.
-- Nếu tài liệu gốc có tiếng Trung/tiếng nước ngoài → DỊCH SANG TIẾNG VIỆT.
-- Ví dụ: 放弃 → "từ bỏ", 执行 → "thực hiện". KHÔNG giữ nguyên ký tự Trung Quốc.
+- TUYỆT ĐỐI KHÔNG dùng tiếng Trung Quốc (中文), tiếng Nhật, tiếng Hàn.
+- Nếu tài liệu gốc có tiếng Trung/nước ngoài → DỊCH SANG TIẾNG VIỆT.
 
 QUY TẮC VIẾT:
-1. Tiếng Việt CÓ DẤU, dễ hiểu, đi thẳng vào trọng tâm.
-2. TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, tên tổ chức.
-3. CẤM nói chung chung kiểu "có nhiều quy định". PHẢI nêu cụ thể.
-4. Thuật ngữ chuyên môn → giải thích ngay trong ngoặc.
-5. "detail" PHẢI 4-8 câu, cực kỳ chi tiết với dữ kiện cụ thể.
-6. Ưu tiên: số liệu → ngày tháng → tên riêng → việc cần làm → cảnh báo.
+1. TRÍCH DẪN CỤ THỂ: con số, số tiền, ngày tháng, tên người, định luật.
+2. CẤM nói chung chung. "detail" PHẢI 4-8 câu chi tiết.
+3. Nếu tài liệu NGẮN (dưới 300 chữ) hoặc KHÔNG PHẢI TÀI LIỆU HỌC TẬP, có thể để mảng "flashcards" và "quiz" RỖNG ([]).
+4. Phân loại "document_type" chính xác (education, business, general).
 
 {excel_hint}
 
-🎯 ACTION ITEMS (action_items):
-- Rút ra 2-4 việc cụ thể người đọc CẦN LÀM sau khi đọc tài liệu này.
-- Viết ngắn gọn, bắt đầu bằng động từ: "Nộp...", "Liên hệ...", "Kiểm tra...", "Lưu ý..."
-- Nếu không có việc cần làm → ["Đọc và lưu lại để tham khảo khi cần"]
-
-❓ SUGGESTED QUESTIONS (suggested_questions):
-- Gợi ý 2-3 câu hỏi mà người đọc có thể MUỐN HỎI THÊM về tài liệu này.
-- Ví dụ: "Khoản phạt chậm thanh toán tính như thế nào?", "Thuốc này có tác dụng phụ gì?"
-- NẾU LÀ EXCEL/BẢNG TÍNH: ưu tiên câu hỏi phân tích số liệu như "Tổng doanh thu?", "Tháng nào cao nhất?", "So sánh giữa các cột?"
-
-Số ý: từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS}, mục tiêu {target_points} ý.
-Chỉ trả về JSON hợp lệ.
+Số ý (points): từ {MIN_SUMMARY_POINTS} đến {MAX_SUMMARY_POINTS}, mục tiêu {target_points} ý.
+Chỉ trả về JSON hợp lệ, không markdown.
 
 ═════════════════════════════════
 {text}"""
@@ -1136,20 +1141,22 @@ async def summarize_text_structured(text: str) -> dict[str, Any]:
             )
             parsed = _extract_json(response_text)
             normalized = _normalize_points(parsed, target_points)
+            
+            # Use document_type from the unified prompt
+            normalized["document_type"] = parsed.get("document_type", "general")
+            # flashcards và quiz đã có sẵn trong normalized nếu AI trả về đúng schema
+            if "flashcards" in parsed:
+                normalized["flashcards"] = parsed["flashcards"]
+            if "quiz" in parsed:
+                normalized["quiz"] = parsed["quiz"]
+
             logger.info(
-                "Summary generated: %s chars, cache stats: %s, attempt: %s",
-                len(response_text), _text_cache.stats, attempt + 1,
+                "Summary generated: %s chars, type: %s, cache stats: %s, attempt: %s",
+                len(response_text), normalized.get("document_type"), _text_cache.stats, attempt + 1,
             )
 
             # Layer 1: Store in cache
             _text_cache.put(text, normalized)
-
-            # ADDED: Detect document mode for Study Mode routing
-            from services.mode_detector import detect_mode
-            mode_result = await detect_mode(text)
-            # Normalize: "STUDY_MATERIAL" -> "education" (matches webhook buttons)
-            normalized["document_type"] = "education" if mode_result["mode"] == "STUDY_MATERIAL" else "general"
-            normalized["mode_confidence"] = mode_result["confidence"]
 
             return normalized
 
