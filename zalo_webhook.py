@@ -57,6 +57,7 @@ from services.db_service import (
     delete_document_by_id,
     get_user_docs,
     get_supabase_client,
+    supabase,
     check_rate_limit,
     increment_usage,
     get_document_by_id,
