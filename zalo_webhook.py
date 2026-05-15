@@ -2669,9 +2669,36 @@ async def miniapp_upload_document(request: Request):
             if doc_text:
                 save_document_text_temp(user_id, doc_id, doc_text)
 
+            # 📝 Generate quiz questions from document (if not already present)
+            quiz_questions = structured.get("quiz", [])
+            if not quiz_questions and doc_text and len(doc_text) > 100:
+                try:
+                    from prompts.study_prompts import GENERATE_QUIZ_PROMPT
+                    quiz_prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
+                    quiz_json_str = await _call_with_smart_routing(
+                        quiz_prompt,
+                        text_length=len(doc_text),
+                        max_tokens=8192,
+                        response_json=True,
+                        force_gemini=False,
+                    )
+                    quiz_data = json.loads(quiz_json_str)
+                    quiz_questions = quiz_data.get("questions", [])
+
+                    # Update document with quiz questions
+                    if supabase:
+                        supabase.table("documents").update({
+                            "quiz_questions": quiz_questions
+                        }).eq("id", doc_id).eq("user_id", user_id).execute()
+
+                    logger.info("✅ Quiz generated for doc %s: %s questions", doc_id[:8], len(quiz_questions))
+                except Exception as quiz_err:
+                    logger.warning("Quiz generation failed for doc %s: %s", doc_id[:8], quiz_err)
+                    quiz_questions = []
+
             logger.info("✅ Miniapp upload success: user=%s, doc=%s, type=%s, flashcards=%s, quiz=%s",
                         user_id[:8], doc_id[:8], file_type,
-                        len(structured.get("flashcards", [])), len(structured.get("quiz", [])))
+                        len(structured.get("flashcards", [])), len(quiz_questions))
 
             return JSONResponse(content={
                 "id": doc_id,
@@ -2680,7 +2707,8 @@ async def miniapp_upload_document(request: Request):
                 "timestamp": time.time(),
                 "summary": summary_str,
                 "flashcard_count": len(structured.get("flashcards", [])),
-                "quiz_count": len(structured.get("quiz", [])),
+                "quiz_count": len(quiz_questions),
+                "quiz": quiz_questions,  # Return quiz questions to frontend
             }, status_code=201)
 
         finally:
@@ -2766,17 +2794,17 @@ async def miniapp_get_flashcards(doc_id: str, request: Request):
         if supabase:
             result = supabase.table("documents").select("flashcards").eq("id", doc_id).eq("user_id", user_id).execute()
             if not result.data:
-                return JSONResponse(content={"error": "Document not found"}, status_code=404)
-            flashcards = result.data[0].get("flashcards", [])
+                return JSONResponse(content=[], status_code=200)
+            flashcards = result.data[0].get("flashcards") or []
             return JSONResponse(content=flashcards)
 
         # Memory fallback
         if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
-            return JSONResponse(content=_memory_documents[user_id][doc_id].get("flashcards", []))
+            return JSONResponse(content=_memory_documents[user_id][doc_id].get("flashcards") or [])
 
-        return JSONResponse(content={"error": "Document not found"}, status_code=404)
+        return JSONResponse(content=[], status_code=200)
     except Exception as exc:
-        logger.error("Miniapp get flashcards error: %s", exc)
+        logger.error("Miniapp get flashcards error: %s", exc, exc_info=True)
         return JSONResponse(content={"error": "Internal error"}, status_code=500)
 
 
@@ -2792,17 +2820,17 @@ async def miniapp_get_quiz(doc_id: str, request: Request):
         if supabase:
             result = supabase.table("documents").select("quiz_questions").eq("id", doc_id).eq("user_id", user_id).execute()
             if not result.data:
-                return JSONResponse(content={"error": "Document not found"}, status_code=404)
-            quiz_questions = result.data[0].get("quiz_questions", [])
+                return JSONResponse(content=[], status_code=200)
+            quiz_questions = result.data[0].get("quiz_questions") or []
             return JSONResponse(content=quiz_questions)
 
         # Memory fallback
         if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
-            return JSONResponse(content=_memory_documents[user_id][doc_id].get("quiz_questions", []))
+            return JSONResponse(content=_memory_documents[user_id][doc_id].get("quiz_questions") or [])
 
-        return JSONResponse(content={"error": "Document not found"}, status_code=404)
+        return JSONResponse(content=[], status_code=200)
     except Exception as exc:
-        logger.error("Miniapp get quiz error: %s", exc)
+        logger.error("Miniapp get quiz error: %s", exc, exc_info=True)
         return JSONResponse(content={"error": "Internal error"}, status_code=500)
 
 
