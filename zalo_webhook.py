@@ -15,9 +15,11 @@ import json
 import logging
 import os
 import random
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -27,6 +29,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# Import shared quiz router
+try:
+    from shared_quiz_api import router as shared_quiz_router
+except ImportError:
+    shared_quiz_router = None  # Will be handled later
 
 from config import config
 from services.ai_summarizer import (
@@ -75,6 +83,10 @@ from services.study_engine import (
     QuizSession,
     FlashcardSession,
     time_to_readable,
+)
+from services.study_analytics import (
+    record_quiz_completion,
+    record_flashcard_completion,
 )
 from services.coin_service import (
     get_coin_balance,
@@ -2540,11 +2552,11 @@ async def miniapp_get_documents(request: Request):
         result = []
         for d in docs:
             result.append({
-                "id": d.get("doc_id", ""),
-                "name": d.get("file_name", "Untitled"),
+                "id": d.get("id", d.get("doc_id", "")),
+                "name": d.get("name", d.get("file_name", "Untitled")),
                 "doc_type": d.get("doc_type", "pdf"),
-                "timestamp": d.get("created_at", 0),
-                "summary": d.get("summary_text", ""),
+                "timestamp": d.get("timestamp", d.get("created_at", 0)),
+                "summary": d.get("summary", d.get("summary_text", "")),
             })
         return JSONResponse(content=result)
     except Exception as exc:
@@ -2619,13 +2631,20 @@ async def miniapp_upload_document(request: Request):
             # Generate doc_id
             doc_id = str(uuid.uuid4())
 
+            # Create a nice string summary
+            overview = structured.get("overview", "")
+            points = structured.get("points", [])
+            summary_str = overview
+            if points:
+                summary_str += "\n\nCác ý chính:\n" + "\n".join([f"• {p.get('title', '')}: {p.get('detail', '')}" for p in points])
+
             # Save document to DB (including flashcards and quiz)
             save_document(
                 user_id=user_id,
                 doc_id=doc_id,
                 name=filename,
                 text=doc_text or "[File không có text content]",
-                summary=structured.get("summary", ""),
+                summary=summary_str,
                 doc_type=file_type,
                 flashcards=structured.get("flashcards", []),
                 quiz_questions=structured.get("quiz", [])
@@ -2659,7 +2678,7 @@ async def miniapp_upload_document(request: Request):
                 "name": filename,
                 "doc_type": file_type,
                 "timestamp": time.time(),
-                "summary": structured.get("summary", ""),
+                "summary": summary_str,
                 "flashcard_count": len(structured.get("flashcards", [])),
                 "quiz_count": len(structured.get("quiz", [])),
             }, status_code=201)
@@ -3116,6 +3135,271 @@ async def miniapp_delete_document(doc_id: str, request: Request):
         logger.error("Miniapp delete document error: %s", exc)
         return JSONResponse(content={"error": "Internal error"}, status_code=500)
 
+
+@app.get("/api/miniapp/streak")
+async def miniapp_get_streak(request: Request):
+    """Get user's learning streak data."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Try to get streak from Supabase
+        current_streak = 0
+        longest_streak = 0
+        streak_maintained = False
+
+        if supabase:
+            try:
+                result = supabase.table("user_streaks").select("*").eq("user_id", user_id).execute()
+                if result.data and len(result.data) > 0:
+                    streak_data = result.data[0]
+                    current_streak = streak_data.get("current_streak", 0)
+                    longest_streak = streak_data.get("longest_streak", 0)
+                    last_activity = streak_data.get("last_activity_date", "")
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    streak_maintained = last_activity == today
+            except Exception as e:
+                logger.warning("Streak DB error: %s, using defaults", e)
+
+        return JSONResponse(content={
+            "current_streak": current_streak,
+            "longest_streak": longest_streak,
+            "streak_maintained": streak_maintained,
+        })
+    except Exception as exc:
+        logger.error("Miniapp streak error: %s", exc)
+        return JSONResponse(content={"current_streak": 0, "longest_streak": 0, "streak_maintained": False})
+
+
+@app.post("/api/miniapp/documents/{doc_id}/rename")
+async def miniapp_rename_document(doc_id: str, request: Request):
+    """Rename a document."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        body = await request.json()
+        new_name = body.get("name", "").strip()
+        if not new_name:
+            return JSONResponse(content={"error": "Missing name"}, status_code=400)
+
+        if supabase:
+            supabase.table("documents").update({"name": new_name}).eq("id", doc_id).eq("user_id", user_id).execute()
+        elif user_id in _memory_documents and doc_id in _memory_documents[user_id]:
+            _memory_documents[user_id][doc_id]["name"] = new_name
+
+        return JSONResponse(content={"status": "ok", "name": new_name})
+    except Exception as exc:
+        logger.error("Miniapp rename document error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/quiz/{session_id}/result")
+async def miniapp_quiz_result(session_id: str, request: Request):
+    """Get quiz result for a session."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Try to load session from memory or DB
+        session_record = load_study_session(user_id)
+        if session_record and session_record.get("session_type") == "quiz":
+            session = QuizSession.from_dict(session_record["data"])
+            final = session.get_final_score()
+            return JSONResponse(content={
+                "correct": final["correct"],
+                "total": final["total"],
+                "percentage": round((final["correct"] / max(final["total"], 1)) * 100),
+                "grade": "Xuất sắc" if final["correct"] / max(final["total"], 1) >= 0.8 else "Khá" if final["correct"] / max(final["total"], 1) >= 0.5 else "Cần cải thiện",
+                "time_seconds": final.get("time_seconds", 0),
+            })
+
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("Miniapp quiz result error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.get("/api/miniapp/quiz/{session_id}/review")
+async def miniapp_quiz_review(session_id: str, request: Request):
+    """Get quiz review with all questions and answers."""
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        session_record = load_study_session(user_id)
+        if session_record and session_record.get("session_type") == "quiz":
+            session = QuizSession.from_dict(session_record["data"])
+            review = session.get_review()
+            return JSONResponse(content=review)
+
+        # If no active session, return basic info
+        return JSONResponse(content={
+            "total": 0, "correct": 0, "wrong": 0, "questions": []
+        })
+    except Exception as exc:
+        logger.error("Miniapp quiz review error: %s", exc)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
+@app.post("/api/miniapp/solve-problem")
+async def miniapp_solve_problem(
+    request: Request,
+    file: UploadFile = File(...)
+):
+    """
+    Upload image of a problem → AI generates step-by-step solution.
+
+    Process:
+    1. Gemini Vision OCR extracts text from image
+    2. DeepSeek (via Gemini) generates detailed solution with steps
+
+    Returns JSON:
+    {
+      "question": "tóm tắt đề bài",
+      "steps": ["bước 1", "bước 2", ...],
+      "answer": "đáp án cuối cùng"
+    }
+    """
+    user_id = request.headers.get("X-User-Id")
+    if not user_id:
+        return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp"]
+    if file.content_type not in allowed_types:
+        return JSONResponse(
+            content={"error": "Chỉ hỗ trợ ảnh JPG, PNG, WebP"},
+            status_code=400
+        )
+
+    # Save uploaded file temporarily
+    suffix = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        from services.solve_service import solve_problem_image
+        result = await solve_problem_image(tmp_path, user_id)
+        return JSONResponse(content=result)
+    except ValueError as e:
+        logger.warning("Solve problem validation error for user %s: %s", user_id, e)
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.error("Solve problem error for user %s: %s", user_id, e, exc_info=True)
+        return JSONResponse(content={"error": "Không thể giải bài. Vui lòng thử lại."}, status_code=500)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+@app.post("/api/miniapp/generate-quiz-from-solution")
+async def generate_quiz_from_solution(request: Request):
+    """
+    Generate 5 quiz questions from a solved problem (question + steps + answer).
+
+    Request JSON:
+    {
+      "question": "Đề bài...",
+      "steps": ["bước 1", ...],
+      "answer": "đáp án"
+    }
+
+    Returns (using GENERATE_QUIZ_PROMPT):
+    {
+      "questions": [
+        {
+          "question": "Câu hỏi?",
+          "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+          "correct": 0,
+          "explanation": "Giải thích",
+          "difficulty": "easy|medium|hard"
+        }
+      ]
+    }
+    """
+    user_id = request.headers.get("X-User-Id")
+    if not user_id:
+        return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+    try:
+        body = await request.json()
+        question = body.get("question", "").strip()
+        steps = body.get("steps", [])
+        answer = body.get("answer", "").strip()
+
+        if not question or not steps or not answer:
+            return JSONResponse(
+                content={"error": "Thiếu question/steps/answer"},
+                status_code=400
+            )
+
+        # Build context from solution
+        context = f"ĐỀ BÀI:\n{question}\n\nLỜI GIẢI:\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(steps))
+
+        # Use existing quiz generation prompt
+        from prompts.study_prompts import GENERATE_QUIZ_PROMPT
+        prompt = GENERATE_QUIZ_PROMPT.format(document_text=context)
+
+        # Call DeepSeek/Gemini with smart routing
+        result = await _call_with_smart_routing(
+            [prompt],
+            text_length=0,
+            max_tokens=2000,
+            response_json=True,
+        )
+
+        # Parse JSON
+        try:
+            quiz_data = json.loads(result)
+        except json.JSONDecodeError:
+            logger.error("Invalid quiz JSON from AI for user %s: %s", user_id, result[:200])
+            return JSONResponse(
+                content={"error": "Không thể tạo quiz. Vui lòng thử lại."},
+                status_code=500
+            )
+
+        # Validate structure
+        if "questions" not in quiz_data or not isinstance(quiz_data["questions"], list):
+            return JSONResponse(
+                content={"error": "Invalid quiz format"},
+                status_code=500
+            )
+
+        # Limit to 5 questions
+        quiz_data["questions"] = quiz_data["questions"][:5]
+
+        logger.info(
+            "Quiz generated from solution for user %s: %d questions",
+            user_id, len(quiz_data["questions"])
+        )
+
+        return JSONResponse(content=quiz_data)
+
+    except json.JSONDecodeError:
+        return JSONResponse(
+            content={"error": "Invalid request JSON"},
+            status_code=400
+        )
+    except Exception as e:
+        logger.error("Generate quiz from solution error for user %s: %s", user_id, e, exc_info=True)
+        return JSONResponse(
+            content={"error": "Không thể tạo quiz. Vui lòng thử lại."},
+            status_code=500
+        )
+
+
+
+
+# Include shared quiz router if available
+if shared_quiz_router:
+    app.include_router(shared_quiz_router)
 
 # @app.post("/api/miniapp/chat/ask")
 # async def miniapp_chat_ask(request: Request):

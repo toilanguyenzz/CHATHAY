@@ -1,4 +1,4 @@
-"""Database Service — Manages Supabase connection with an in-memory fallback."""
+"""Database Service â€” Manages Supabase connection with an in-memory fallback."""
 
 import logging
 import time
@@ -25,7 +25,7 @@ if create_client and config.SUPABASE_URL and config.SUPABASE_KEY:
         logger.warning(f"Failed to initialize Supabase client, falling back to in-memory: {e}")
 
 def get_supabase_client():
-    """Trả về Supabase client hiện tại."""
+    """Tráº£ vá» Supabase client hiá»‡n táº¡i."""
     return supabase
 
 # ===== IN-MEMORY FALLBACK STORAGE =====
@@ -34,17 +34,17 @@ _memory_documents: dict[int, OrderedDict] = {}
 _memory_active_doc: dict[int, str] = {}
 MAX_DOCS_PER_USER = 5
 
-# Pending Action: bot đang chờ user phản hồi gì
+# Pending Action: bot Ä‘ang chá» user pháº£n há»“i gÃ¬
 # Key: user_id -> {action, data, expires_at}
 _memory_pending_action: dict[int | str, dict] = {}
 
 # ===== DOCUMENT TEXT TEMPORARY STORAGE (for Q&A) =====
-# Lưu text gốc tạm thời cho Q&A sessions — TTL 24h, tự cleanup
+# LÆ°u text gá»‘c táº¡m thá»i cho Q&A sessions â€” TTL 24h, tá»± cleanup
 # Key: "user_id:doc_id" -> {"text": str, "expires_at": float}
 _memory_doc_text_temp: dict[str, dict] = {}
 
 # ===== Q&A COUNTER =====
-# Đếm số câu Q&A đã hỏi cho mỗi document
+# Äáº¿m sá»‘ cÃ¢u Q&A Ä‘Ã£ há»i cho má»—i document
 # Key: "user_id:doc_id" -> count
 _memory_qa_count: dict[str, int] = {}
 QA_LIMIT_PER_DOC = 5
@@ -53,6 +53,10 @@ QA_LIMIT_PER_DOC = 5
 # Key: "user_id" -> serialized session dict (QuizSession or FlashcardSession)
 # TTL: 24h (in-memory cleanup)
 _memory_study_sessions: dict[str, dict] = {}
+
+# ===== SOLVED PROBLEMS STORAGE =====
+# Key: "user_id" -> list of solved problem records (ordered by timestamp desc)
+_memory_solved_problems: dict[str, list[dict]] = {}
 
 
 # ===== DB METHODS =====
@@ -156,7 +160,7 @@ def increment_usage(user_id: int | str, action_type: str = "general", amount: in
 
 # ===== PREMIUM GATING: STUDY MODE LIMIT =====
 def get_study_mode_count_today(user_id: int | str) -> int:
-    """Lấy số study sessions đã dùng hôm nay."""
+    """Láº¥y sá»‘ study sessions Ä‘Ã£ dÃ¹ng hÃ´m nay."""
     today = time.strftime("%Y-%m-%d")
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
 
@@ -238,7 +242,7 @@ def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str,
                 "id": doc_id,
                 "user_id": user_id,
                 "name": name,
-                "text": "[Đã dọn dẹp nội dung gốc để bảo mật nha! 🔒]",  # DB limit safeguard & privacy
+                "text": "[ÄÃ£ dá»n dáº¹p ná»™i dung gá»‘c Ä‘á»ƒ báº£o máº­t nha! ðŸ”’]",  # DB limit safeguard & privacy
                 "summary": summary,
                 "doc_type": doc_type,
                 "timestamp": timestamp
@@ -268,7 +272,7 @@ def save_document(user_id: int, doc_id: str, name: str, text: str, summary: str,
 
     doc_data = {
         "name": name,
-        "text": "[Đã dọn dẹp nội dung gốc để bảo mật nha! 🔒]",
+        "text": "[ÄÃ£ dá»n dáº¹p ná»™i dung gá»‘c Ä‘á»ƒ báº£o máº­t nha! ðŸ”’]",
         "summary": summary,
         "timestamp": timestamp,
         "doc_type": doc_type,
@@ -394,7 +398,7 @@ def delete_document_by_id(user_id: int, doc_id: str) -> bool:
 
 
 def get_document_by_id(user_id: int | str, doc_id: str) -> dict | None:
-    """Lấy document theo ID từ DB hoặc memory."""
+    """Láº¥y document theo ID tá»« DB hoáº·c memory."""
     user_id_int = int(user_id) if str(user_id).isdigit() else user_id
     if supabase:
         try:
@@ -417,7 +421,7 @@ def get_document_by_id(user_id: int | str, doc_id: str) -> dict | None:
 
 
 def save_document_content(doc_id: str, content: dict):
-    """Lưu RAG content (chunks, embeddings) vào document."""
+    """LÆ°u RAG content (chunks, embeddings) vÃ o document."""
     if supabase:
         try:
             supabase.table("documents")\
@@ -434,33 +438,24 @@ def save_document_content(doc_id: str, content: dict):
             user_docs[doc_id]["content"] = content
             break
 
-    # Cleanup Q&A counter và temp text
-    qa_key = f"{user_id}:{doc_id}"
-    if qa_key in _memory_qa_count:
-        del _memory_qa_count[qa_key]
-        logger.info("Deleted Q&A counter for user %s, doc %s", user_id, doc_id)
-    if qa_key in _memory_doc_text_temp:
-        del _memory_doc_text_temp[qa_key]
-        logger.info("Deleted Q&A temp text for user %s, doc %s", user_id, doc_id)
-
-    return deleted
+    # Note: Q&A cleanup is handled per-user in other methods
 
 
 
 # ===== PENDING ACTION METHODS =====
 
 def set_pending_action(user_id: int | str, action: str, data: dict):
-    """Đặt trạng thái chờ phản hồi. Tự hết hạn sau 5 phút."""
+    """Äáº·t tráº¡ng thÃ¡i chá» pháº£n há»“i. Tá»± háº¿t háº¡n sau 5 phÃºt."""
     _memory_pending_action[user_id] = {
         "action": action,
         "data": data,
-        "expires_at": time.time() + 300,  # 5 phút
+        "expires_at": time.time() + 300,  # 5 phÃºt
     }
     logger.info("Pending action set for user %s: %s", user_id, action)
 
 
 def get_pending_action(user_id: int | str) -> dict | None:
-    """Lấy pending action nếu còn hiệu lực."""
+    """Láº¥y pending action náº¿u cÃ²n hiá»‡u lá»±c."""
     pending = _memory_pending_action.get(user_id)
     if not pending:
         return None
@@ -471,7 +466,7 @@ def get_pending_action(user_id: int | str) -> dict | None:
 
 
 def clear_pending_action(user_id: int | str):
-    """Xóa pending action sau khi xử lý xong."""
+    """XÃ³a pending action sau khi xá»­ lÃ½ xong."""
     _memory_pending_action.pop(user_id, None)
 
 def delete_user_data(user_id: int | str):
@@ -482,6 +477,7 @@ def delete_user_data(user_id: int | str):
             supabase.table("documents").delete().eq("user_id", user_id).execute()
             supabase.table("user_usage").delete().eq("user_id", user_id).execute()
             supabase.table("user_state").delete().eq("user_id", user_id).execute()
+            supabase.table("solved_problems").delete().eq("user_id", user_id).execute()
             logger.info("Deleted user %s data from Supabase", user_id)
         except Exception as e:
             logger.error("Supabase delete_user_data error: %s", e)
@@ -491,6 +487,8 @@ def delete_user_data(user_id: int | str):
     _memory_documents.pop(int(user_id) if str(user_id).isdigit() else user_id, None)
     _memory_active_doc.pop(int(user_id) if str(user_id).isdigit() else user_id, None)
     _memory_pending_action.pop(user_id, None)
+    # Cleanup solved problems
+    _memory_solved_problems.pop(int(user_id) if str(user_id).isdigit() else user_id, None)
     # Cleanup Q&A temp texts
     keys_to_delete = [k for k in _memory_doc_text_temp if k.startswith(f"{user_id}:")]
     for k in keys_to_delete:
@@ -505,7 +503,7 @@ def delete_user_data(user_id: int | str):
 # ===== DOCUMENT TEXT TEMPORARY STORAGE (for Q&A) =====
 
 def save_document_text_temp(user_id: int | str, doc_id: str, text: str, ttl_hours: int = 24):
-    """Lưu text gốc tạm thời cho Q&A sessions. TTL mặc định 24h."""
+    """LÆ°u text gá»‘c táº¡m thá»i cho Q&A sessions. TTL máº·c Ä‘á»‹nh 24h."""
     key = f"{user_id}:{doc_id}"
     _memory_doc_text_temp[key] = {
         "text": text,
@@ -518,7 +516,7 @@ def save_document_text_temp(user_id: int | str, doc_id: str, text: str, ttl_hour
 
 
 def get_document_text_temp(user_id: int | str, doc_id: str) -> str | None:
-    """Lấy text gốc cho Q&A session. Trả về None nếu đã hết hạn."""
+    """Láº¥y text gá»‘c cho Q&A session. Tráº£ vá» None náº¿u Ä‘Ã£ háº¿t háº¡n."""
     key = f"{user_id}:{doc_id}"
     entry = _memory_doc_text_temp.get(key)
     if not entry:
@@ -531,7 +529,7 @@ def get_document_text_temp(user_id: int | str, doc_id: str) -> str | None:
 
 
 def renew_document_text_temp(user_id: int | str, doc_id: str, ttl_hours: int = 24) -> bool:
-    """Gia hạn TTL cho text tạm (khi user tiếp tục hỏi). Returns True nếu thành công."""
+    """Gia háº¡n TTL cho text táº¡m (khi user tiáº¿p tá»¥c há»i). Returns True náº¿u thÃ nh cÃ´ng."""
     key = f"{user_id}:{doc_id}"
     entry = _memory_doc_text_temp.get(key)
     if not entry:
@@ -541,12 +539,12 @@ def renew_document_text_temp(user_id: int | str, doc_id: str, ttl_hours: int = 2
 
 
 def _cleanup_expired_doc_texts():
-    """Dọn dẹp tất cả text tạm và Q&A counter đã hết hạn. Gọi lazy mỗi lần save."""
+    """Dá»n dáº¹p táº¥t cáº£ text táº¡m vÃ  Q&A counter Ä‘Ã£ háº¿t háº¡n. Gá»i lazy má»—i láº§n save."""
     now = time.time()
     expired_keys = [k for k, v in _memory_doc_text_temp.items() if now > v["expires_at"]]
     for k in expired_keys:
         del _memory_doc_text_temp[k]
-        # Also cleanup Q&A counter cho doc này
+        # Also cleanup Q&A counter cho doc nÃ y
         if k in _memory_qa_count:
             del _memory_qa_count[k]
             logger.info("Cleaned up Q&A counter for expired doc: %s", k)
@@ -556,7 +554,7 @@ def _cleanup_expired_doc_texts():
 
 # ===== Q&A COUNTER =====
 def get_qa_count(user_id: int | str, doc_id: str) -> int:
-    """Lấy số câu Q&A đã hỏi cho document này."""
+    """Láº¥y sá»‘ cÃ¢u Q&A Ä‘Ã£ há»i cho document nÃ y."""
     # Normalize user_id to match storage format
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
     key = f"{norm_user_id}:{doc_id}"
@@ -564,7 +562,7 @@ def get_qa_count(user_id: int | str, doc_id: str) -> int:
 
 
 def increment_qa_count(user_id: int | str, doc_id: str) -> int:
-    """Tăng counter Q&A. Trả về số câu đã hỏi (sau khi tăng)."""
+    """TÄƒng counter Q&A. Tráº£ vá» sá»‘ cÃ¢u Ä‘Ã£ há»i (sau khi tÄƒng)."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
     key = f"{norm_user_id}:{doc_id}"
     _memory_qa_count[key] = _memory_qa_count.get(key, 0) + 1
@@ -572,7 +570,7 @@ def increment_qa_count(user_id: int | str, doc_id: str) -> int:
 
 
 def reset_qa_count(user_id: int | str, doc_id: str):
-    """Reset counter (khi user gửi file mới)."""
+    """Reset counter (khi user gá»­i file má»›i)."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
     key = f"{norm_user_id}:{doc_id}"
     _memory_qa_count.pop(key, None)
@@ -583,7 +581,7 @@ def reset_qa_count(user_id: int | str, doc_id: str):
 # TTL: 24h (in-memory cleanup)
 
 def save_study_session(user_id: str, doc_id: str, session_type: str, session_data: dict) -> bool:
-    """Lưu study session vào memory (và Supabase nếu có) với TTL 24h."""
+    """LÆ°u study session vÃ o memory (vÃ  Supabase náº¿u cÃ³) vá»›i TTL 24h."""
     try:
         key = f"study:{user_id}"
         now = time.time()
@@ -599,7 +597,7 @@ def save_study_session(user_id: str, doc_id: str, session_type: str, session_dat
 
         if supabase:
             try:
-                # Upsert vào bảng study_sessions
+                # Upsert vÃ o báº£ng study_sessions
                 supabase.table("study_sessions").upsert({
                     "user_id": user_id,
                     "doc_id": doc_id,
@@ -619,7 +617,7 @@ def save_study_session(user_id: str, doc_id: str, session_type: str, session_dat
 
 
 def load_study_session(user_id: str) -> dict | None:
-    """Load study session từ memory (và Supabase nếu có). Validate TTL 24h."""
+    """Load study session tá»« memory (vÃ  Supabase náº¿u cÃ³). Validate TTL 24h."""
     try:
         key = f"study:{user_id}"
         now = time.time()
@@ -629,7 +627,7 @@ def load_study_session(user_id: str) -> dict | None:
             rec = _memory_study_sessions[key]
             # Validate TTL
             if rec.get("expires_at", 0) < now:
-                # Expired, delete và fallthrough to reload
+                # Expired, delete vÃ  fallthrough to reload
                 _memory_study_sessions.pop(key, None)
                 if supabase:
                     try:
@@ -694,7 +692,7 @@ def load_study_session(user_id: str) -> dict | None:
 
 
 def clear_study_session(user_id: str) -> bool:
-    """Xóa study session (khi user thoát hoặc hết quiz)."""
+    """XÃ³a study session (khi user thoÃ¡t hoáº·c háº¿t quiz)."""
     try:
         key = f"study:{user_id}"
         _memory_study_sessions.pop(key, None)
@@ -712,7 +710,7 @@ def clear_study_session(user_id: str) -> bool:
 
 
 def _cleanup_expired_study_sessions():
-    """Dọn study sessions cũ (TTL 24h) từ memory và Supabase."""
+    """Dá»n study sessions cÅ© (TTL 24h) tá»« memory vÃ  Supabase."""
     now = time.time()
     expired_keys = []
     for key, sess in _memory_study_sessions.items():
@@ -735,13 +733,112 @@ def _cleanup_expired_study_sessions():
             logger.warning(f"Supabase cleanup_expired_study_sessions error: {e}")
 
 
+# ===== SOLVED PROBLEMS METHODS =====
+
+def save_solved_problem(
+    user_id: int | str,
+    question: str,
+    steps: list[str],
+    answer: str,
+    subject: str | None = None,
+    difficulty: str | None = None,
+    image_url: str | None = None
+):
+    """LÆ°u bÃ i táº­p Ä‘Ã£ giáº£i vÃ o database."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+    problem_id = f"prob_{int(time.time())}_{hash(question) % 10000}"
+    timestamp = time.time()
+
+    problem_data = {
+        "id": problem_id,
+        "user_id": norm_user_id,
+        "question": question[:500],  # limit length
+        "steps": steps,
+        "answer": answer[:200],
+        "subject": subject,
+        "difficulty": difficulty,
+        "image_url": image_url,
+        "created_at": timestamp,
+    }
+
+    if supabase:
+        try:
+            supabase.table("solved_problems").insert(problem_data).execute()
+            logger.info("Saved solved problem %s for user %s to Supabase", problem_id, norm_user_id)
+            return problem_id
+        except Exception as e:
+            logger.error(f"Supabase save_solved_problem error: {e}")
+
+    # Fallback memory
+    if norm_user_id not in _memory_solved_problems:
+        _memory_solved_problems[norm_user_id] = []
+    _memory_solved_problems[norm_user_id].insert(0, problem_data)
+    # Keep only last 50 problems per user in memory
+    _memory_solved_problems[norm_user_id] = _memory_solved_problems[norm_user_id][:50]
+    logger.info("Saved solved problem %s for user %s to memory", problem_id, norm_user_id)
+    return problem_id
+
+
+def get_solved_problems(user_id: int | str, limit: int = 10) -> list[dict]:
+    """Láº¥y danh sÃ¡ch bÃ i táº­p Ä‘Ã£ giáº£i cá»§a user."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            result = supabase.table("solved_problems")\
+                .select("*")\
+                .eq("user_id", norm_user_id)\
+                .order("created_at", desc=True)\
+                .limit(limit)\
+                .execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Supabase get_solved_problems error: {e}")
+
+    # Fallback memory
+    return _memory_solved_problems.get(norm_user_id, [])[:limit]
+
+
+def delete_solved_problem(user_id: int | str, problem_id: str) -> bool:
+    """XÃ³a má»™t bÃ i táº­p Ä‘Ã£ giáº£i."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+    deleted = False
+
+    if supabase:
+        try:
+            supabase.table("solved_problems")\
+                .delete()\
+                .eq("id", problem_id)\
+                .eq("user_id", norm_user_id)\
+                .execute()
+            deleted = True
+            logger.info("Deleted solved problem %s for user %s from Supabase", problem_id, norm_user_id)
+        except Exception as e:
+            logger.error(f"Supabase delete_solved_problem error: {e}")
+
+    # Memory fallback
+    if norm_user_id in _memory_solved_problems:
+        before = len(_memory_solved_problems[norm_user_id])
+        _memory_solved_problems[norm_user_id] = [
+            p for p in _memory_solved_problems[norm_user_id]
+            if p["id"] != problem_id
+        ]
+        if len(_memory_solved_problems[norm_user_id]) < before:
+            deleted = True
+            logger.info("Deleted solved problem %s for user %s from memory", problem_id, norm_user_id)
+
+    return deleted
+
+
+
+
 
 
 
 # ===== COIN SYSTEM METHODS =====
 
 def get_coin_balance(user_id: int | str) -> int:
-    """Lấy số dư Coin của user."""
+    """Láº¥y sá»‘ dÆ° Coin cá»§a user."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
 
     if supabase:
@@ -756,7 +853,7 @@ def get_coin_balance(user_id: int | str) -> int:
 
 
 def update_coin_balance(user_id: int | str, new_balance: int) -> bool:
-    """Cập nhật số dư Coin."""
+    """Cáº­p nháº­t sá»‘ dÆ° Coin."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
 
     if supabase:
@@ -774,7 +871,7 @@ def update_coin_balance(user_id: int | str, new_balance: int) -> bool:
 
 
 def log_coin_transaction(user_id: int | str, amount: int, trans_type: str, reason: str, balance_after: int):
-    """Ghi log giao dịch Coin."""
+    """Ghi log giao dá»‹ch Coin."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
 
     if supabase:
@@ -791,7 +888,7 @@ def log_coin_transaction(user_id: int | str, amount: int, trans_type: str, reaso
 
 
 def get_coin_transactions(user_id: int | str, limit: int = 20):
-    """Lấy lịch sử giao dịch Coin."""
+    """Láº¥y lá»‹ch sá»­ giao dá»‹ch Coin."""
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
 
     if supabase:
@@ -805,7 +902,7 @@ def get_coin_transactions(user_id: int | str, limit: int = 20):
 
 
 def get_user_by_zalo_id(zalo_user_id: str) -> dict | None:
-    """Lấy user theo Zalo ID."""
+    """Láº¥y user theo Zalo ID."""
     if supabase:
         try:
             result = supabase.table("user_usage").select("*").eq("user_id", zalo_user_id).execute()
@@ -813,3 +910,80 @@ def get_user_by_zalo_id(zalo_user_id: str) -> dict | None:
         except Exception as e:
             logger.error(f"Supabase get_user_by_zalo_id error: {e}")
     return None
+
+
+# ===== DATABASE MIGRATION HELPER =====
+
+def ensure_solved_problems_table():
+    """Ensure solved_problems table exists. Auto-create on startup if missing."""
+    if not supabase:
+        logger.warning("Supabase not available, skipping table check")
+        return
+
+    try:
+        # Quick check if table exists
+        supabase.table("solved_problems").select("count").limit(1).execute()
+        logger.debug("Table solved_problems exists")
+        return
+    except Exception as e:
+        if "PGRST205" in str(e) or "not found" in str(e).lower():
+            logger.info("Table solved_problems not found, attempting to create...")
+            _create_solved_problems_table()
+        else:
+            logger.error(f"Error checking solved_problems table: {e}")
+
+
+def _create_solved_problems_table():
+    """Create solved_problems table using raw SQL via psycopg2."""
+    try:
+        import psycopg2
+        from pathlib import Path
+        import os
+
+        # Get connection string from env
+        db_url = os.getenv("DATABASE_URL") or os.getenv("SUPABASE_CONNECTION_STRING")
+        if not db_url:
+            logger.error("Cannot create table: DATABASE_URL or SUPABASE_CONNECTION_STRING not set")
+            logger.info("Please run migrations manually - see MIGRATION_GUIDE.md")
+            return
+
+        # Read migration SQL
+        sql_path = Path(__file__).parent.parent / "migrations" / "005_add_solved_problems.sql"
+        if not sql_path.exists():
+            logger.error(f"Migration file not found: {sql_path}")
+            return
+
+        sql = sql_path.read_text(encoding="utf-8")
+
+        # Connect and execute
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # Split statements
+        statements = [s.strip() for s in sql.split(';') if s.strip()]
+        for stmt in statements:
+            try:
+                cur.execute(stmt)
+            except Exception as stmt_err:
+                # Ignore "already exists" errors
+                if "already exists" in str(stmt_err).lower():
+                    logger.debug(f"Object already exists: {stmt[:50]}...")
+                else:
+                    logger.warning(f"Statement failed: {stmt_err}")
+
+        cur.close()
+        conn.close()
+        logger.info("✅ Table solved_problems created successfully")
+
+    except ImportError:
+        logger.error("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        logger.info("Please run migrations manually - see MIGRATION_GUIDE.md")
+    except Exception as e:
+        logger.error(f"Failed to create solved_problems table: {e}")
+        logger.info("Please run migrations manually - see MIGRATION_GUIDE.md")
+
+
+# Call on module import (server startup)
+if supabase:
+    ensure_solved_problems_table()

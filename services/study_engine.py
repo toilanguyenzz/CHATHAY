@@ -44,6 +44,7 @@ class QuizSession:
         self.questions = questions
         self.doc_id = doc_id
         self.quiz_id = quiz_id or f"quiz_{uuid.uuid4().hex[:8]}"
+        self.session_id = self.quiz_id  # Alias for frontend compatibility
 
         # State
         self.current_idx = 0
@@ -63,6 +64,12 @@ class QuizSession:
         if 0 <= self.current_idx < len(self.questions):
             return self.questions[self.current_idx]
         raise IndexError("No more questions")
+
+    def get_current_question(self) -> Optional[Dict[str, Any]]:
+        """Get current question (returns None instead of raising)"""
+        if 0 <= self.current_idx < len(self.questions):
+            return self.questions[self.current_idx]
+        return None
 
     def format_question(self) -> str:
         """
@@ -212,6 +219,32 @@ Reply A/B/C/D hoặc bấm nút bên dưới 👇"""
 
         return result
 
+    def get_review(self) -> Dict[str, Any]:
+        """Get review data with all questions and user answers for frontend."""
+        total = len(self.questions)
+        correct_count = sum(1 for a in self.answers if a["is_correct"])
+        wrong_count = total - correct_count
+
+        review_questions = []
+        for i, q in enumerate(self.questions):
+            # Find user's answer for this question
+            user_answer = next((a for a in self.answers if a["question_idx"] == i), None)
+            review_questions.append({
+                "question": q["question"],
+                "options": q["options"],
+                "correct": q["correct"],
+                "your_answer": user_answer["selected"] if user_answer else "",
+                "explanation": q.get("explanation", ""),
+                "is_correct": user_answer["is_correct"] if user_answer else False,
+            })
+
+        return {
+            "total": total,
+            "correct": correct_count,
+            "wrong": wrong_count,
+            "questions": review_questions,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize session state for storage"""
         return {
@@ -240,6 +273,7 @@ Reply A/B/C/D hoặc bấm nút bên dưới 👇"""
         session.answers = data["answers"]
         session.start_time = data.get("start_time")
         session.end_time = data.get("end_time")
+        session.session_id = data.get("quiz_id", session.quiz_id)  # Ensure session_id is set
         return session
 
 

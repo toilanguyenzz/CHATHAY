@@ -90,3 +90,33 @@ Tài liệu:
 {document_text}
 ---
 """
+
+SOLVE_PROBLEM_PROMPT = """
+Bạn là giáo viên giỏi môn Toán, Lý, Hóa, Tiếng Anh.
+
+HÃY GIẢI BÀI TẬP NÀY TỪNG BƯỚC CHI TIẾT:
+
+ĐỀ BÀI:
+{question}
+
+YÊU CẦU:
+1. Phân tích đề bài: xác định dạng, công thức cần dùng
+2. MỖI BƯỚC phải có:
+   - Giải thích ngắn gọn "tại sao" dùng công thức này
+   - Thay số cụ thể
+   - Kết quả sau bước
+3. Không bỏ qua bước nào (ngay cả những bước đơn giản)
+4. Dùng tiếng Việt, ngôn ngữ dễ hiểu như giáo viên dạy học sinh
+5. Kết thúc bằng "Đáp án: ..."
+
+VÍ DỤ:
+Bước 1: Phương trình có dạng ax² + bx + c = 0. Tại sao? Vì đây là...
+Bước 2: Tính Δ = b² - 4ac = 5² - 4*1*6 = 25 - 24 = 1. Tại sao? Δ dùng để...
+
+TRẢ VỀ JSON (CHỈ JSON, không markdown):
+{{
+  "question": "tóm tắt ngắn đề bài",
+  "steps": ["bước 1: ...", "bước 2: ...", ...],
+  "answer": "đáp án cuối cùng"
+}}
+"""

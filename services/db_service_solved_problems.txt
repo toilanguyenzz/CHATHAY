@@ -1,0 +1,99 @@
+
+
+# ===== SOLVED PROBLEMS METHODS =====
+
+def save_solved_problem(
+    user_id: int | str,
+    question: str,
+    steps: list[str],
+    answer: str,
+    subject: str | None = None,
+    difficulty: str | None = None,
+    image_url: str | None = None
+):
+    """Lưu bài tập đã giải vào database."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+    problem_id = f"prob_{int(time.time())}_{hash(question) % 10000}"
+    timestamp = time.time()
+
+    problem_data = {
+        "id": problem_id,
+        "user_id": norm_user_id,
+        "question": question[:500],  # limit length
+        "steps": steps,
+        "answer": answer[:200],
+        "subject": subject,
+        "difficulty": difficulty,
+        "image_url": image_url,
+        "created_at": timestamp,
+    }
+
+    if supabase:
+        try:
+            supabase.table("solved_problems").insert(problem_data).execute()
+            logger.info("Saved solved problem %s for user %s to Supabase", problem_id, norm_user_id)
+            return problem_id
+        except Exception as e:
+            logger.error(f"Supabase save_solved_problem error: {e}")
+
+    # Fallback memory
+    if norm_user_id not in _memory_solved_problems:
+        _memory_solved_problems[norm_user_id] = []
+    _memory_solved_problems[norm_user_id].insert(0, problem_data)
+    # Keep only last 50 problems per user in memory
+    _memory_solved_problems[norm_user_id] = _memory_solved_problems[norm_user_id][:50]
+    logger.info("Saved solved problem %s for user %s to memory", problem_id, norm_user_id)
+    return problem_id
+
+
+def get_solved_problems(user_id: int | str, limit: int = 10) -> list[dict]:
+    """Lấy danh sách bài tập đã giải của user."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+
+    if supabase:
+        try:
+            result = supabase.table("solved_problems")\
+                .select("*")\
+                .eq("user_id", norm_user_id)\
+                .order("created_at", desc=True)\
+                .limit(limit)\
+                .execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Supabase get_solved_problems error: {e}")
+
+    # Fallback memory
+    return _memory_solved_problems.get(norm_user_id, [])[:limit]
+
+
+def delete_solved_problem(user_id: int | str, problem_id: str) -> bool:
+    """Xóa một bài tập đã giải."""
+    norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
+    deleted = False
+
+    if supabase:
+        try:
+            supabase.table("solved_problems")\
+                .delete()\
+                .eq("id", problem_id)\
+                .eq("user_id", norm_user_id)\
+                .execute()
+            deleted = True
+            logger.info("Deleted solved problem %s for user %s from Supabase", problem_id, norm_user_id)
+        except Exception as e:
+            logger.error(f"Supabase delete_solved_problem error: {e}")
+
+    # Memory fallback
+    if norm_user_id in _memory_solved_problems:
+        before = len(_memory_solved_problems[norm_user_id])
+        _memory_solved_problems[norm_user_id] = [
+            p for p in _memory_solved_problems[norm_user_id]
+            if p["id"] != problem_id
+        ]
+        if len(_memory_solved_problems[norm_user_id]) < before:
+            deleted = True
+            logger.info("Deleted solved problem %s for user %s from memory", problem_id, norm_user_id)
+
+    return deleted
+
+
