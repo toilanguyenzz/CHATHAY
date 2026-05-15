@@ -8,10 +8,14 @@ import AILearningPage from "../pages/ai-learning";
 import FlashcardPage from "../pages/flashcard";
 import QuizPage from "../pages/quiz";
 import VaultPage from "../pages/vault";
+import DemoQuizPage from "../pages/demo-quiz";
+import LeaderboardPage from "../pages/leaderboard";
+import TeacherDashboardPage from "../pages/teacher-dashboard";
+import SharedQuizPage from "../pages/shared-quiz";
+import SolveProblemPage from "../pages/solve-problem";
 import { useAuth } from "../hooks/useAuth";
 import { setApiBase } from "../hooks/useAuth";
 import { apiClient } from "../services/api";
-import { useShow } from "zmp-sdk";
 import { SharedFileProvider, useSharedFile } from "../contexts/SharedFileContext";
 
 /* ─── Layout: No Bottom Nav — Hub → Sub-pages ─── */
@@ -29,6 +33,25 @@ const LayoutContent = () => {
   useEffect(() => {
     if (user_id) {
       apiClient.setUserId(user_id);
+      // Create/update user profile with display_name
+      const updateProfile = async () => {
+        const displayName = (window as any).__USER_DISPLAY_NAME__ || user_id;
+        try {
+          const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+          await fetch(`${backendUrl}/api/user-profile`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id,
+              display_name: displayName,
+              role: "student",
+            }),
+          });
+        } catch (e) {
+          console.warn("Failed to update user profile:", e);
+        }
+      };
+      updateProfile();
     }
   }, [user_id]);
 
@@ -87,12 +110,17 @@ const LayoutContent = () => {
 
             {/* KHU VỰC XỬ LÝ FILE */}
             <Route path="/file-processing" element={<FileProcessingPage />} />
+            <Route path="/solve-problem" element={<SolveProblemPage />} />
             <Route path="/vault" element={<VaultPage />} />
 
             {/* KHU VỰC AI LEARNING */}
             <Route path="/ai-learning" element={<AILearningPage />} />
             <Route path="/flashcard" element={<FlashcardPage />} />
             <Route path="/quiz" element={<QuizPage />} />
+            <Route path="/demo-quiz" element={<DemoQuizPage />} />
+            <Route path="/leaderboard" element={<LeaderboardPage />} />
+            <Route path="/teacher-dashboard/:quizId" element={<TeacherDashboardPage />} />
+            <Route path="/quiz/:shareCode" element={<SharedQuizPage />} />
 
             {/* Catch-all */}
             <Route path="*" element={<Navigate to="/" replace />} />
