@@ -124,6 +124,43 @@ function SolveProblemPage() {
   const [text, setText] = useState("");
   const [thinking, setThinking] = useState(false);
   const [lastSolution, setLastSolution] = useState<any>(null);
+  const [suggestedPrompts, setSuggestedPrompts] = useState([
+    { emoji: "📐", text: "Giải phương trình x² - 5x + 6 = 0", color: "#6366F1", tag: "" },
+    { emoji: "📊", text: "Tính tích phân ∫(2x+1)dx từ 0 đến 3", color: "#EC4899", tag: "" },
+    { emoji: "🧪", text: "Cân bằng phương trình: Fe + O₂ → Fe₂O₃", color: "#F59E0B", tag: "" },
+  ]);
+
+  useEffect(() => {
+    // Fetch documents to generate smart FOMO suggestions
+    documentService.getDocuments().then(docs => {
+      if (docs && docs.length > 0) {
+        // Lấy 3 file gần nhất, bỏ đuôi mở rộng
+        const recentDocs = docs.slice(0, 3).map(d => d.name.replace(/\.[^/.]+$/, ""));
+        const newPrompts: any[] = [];
+        
+        if (recentDocs[0]) {
+           newPrompts.push({ emoji: "🔥", text: `Giải chi tiết câu 5 trong "${recentDocs[0]}"`, color: "#EF4444", tag: "Nhiều bạn đang hỏi" });
+        }
+        if (recentDocs[1]) {
+           newPrompts.push({ emoji: "🎯", text: `Giải thích kiến thức khó nhất bài "${recentDocs[1]}"`, color: "#8B5CF6", tag: "Tài liệu của bạn" });
+        }
+        if (recentDocs[2]) {
+           newPrompts.push({ emoji: "💡", text: `Mẹo giải nhanh dạng bài trong "${recentDocs[2]}"`, color: "#F59E0B", tag: "Hot hôm nay" });
+        }
+
+        const defaults = [
+          { emoji: "📐", text: "Giải phương trình x² - 5x + 6 = 0", color: "#6366F1", tag: "" },
+          { emoji: "📊", text: "Tính tích phân ∫(2x+1)dx từ 0 đến 3", color: "#EC4899", tag: "" },
+        ];
+        
+        while (newPrompts.length < 3 && defaults.length > 0) {
+           newPrompts.push(defaults.shift() as any);
+        }
+
+        setSuggestedPrompts(newPrompts);
+      }
+    }).catch(e => console.warn("Failed to fetch docs for suggestions", e));
+  }, []);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
 
@@ -284,25 +321,32 @@ function SolveProblemPage() {
                 <Text style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", letterSpacing: "0.06em", marginBottom: 8, paddingLeft: 4 }}>
                   💡 HOẶC THỬ HỎI NGAY
                 </Text>
-                {[
-                  { emoji: "📐", text: "Giải phương trình x² - 5x + 6 = 0", color: "#6366F1" },
-                  { emoji: "📊", text: "Tính tích phân ∫(2x+1)dx từ 0 đến 3", color: "#EC4899" },
-                  { emoji: "🧪", text: "Cân bằng phương trình: Fe + O₂ → Fe₂O₃", color: "#F59E0B" },
-                ].map((item, i) => (
+                {suggestedPrompts.map((item, i) => (
                   <Box key={i} onClick={() => chipAction(item.text)} style={{
                     display: "flex", alignItems: "center", gap: 12,
                     padding: "13px 16px", marginBottom: 8, borderRadius: 16,
                     background: "white", border: "1px solid #E5E7EB",
                     cursor: "pointer", boxShadow: "0 1px 4px rgba(0,0,0,0.03)",
-                    transition: "all 0.2s",
+                    transition: "all 0.2s", position: "relative", overflow: "hidden",
                   }}>
+                    {item.tag && (
+                      <Box style={{
+                        position: "absolute", top: 0, right: 0,
+                        background: `linear-gradient(135deg, ${item.color}, ${item.color}DD)`,
+                        padding: "2px 8px", borderRadius: "0 15px 0 10px",
+                      }}>
+                        <Text style={{ fontSize: 9, fontWeight: 800, color: "white" }}>{item.tag}</Text>
+                      </Box>
+                    )}
                     <Box style={{
                       width: 36, height: 36, borderRadius: 12,
                       background: `${item.color}12`,
                       display: "flex", alignItems: "center", justifyContent: "center",
                       fontSize: 18, flexShrink: 0,
                     }}>{item.emoji}</Box>
-                    <Text style={{ fontSize: 13, color: "#374151", fontWeight: 600, lineHeight: 1.4, flex: 1 }}>{item.text}</Text>
+                    <Text style={{ fontSize: 13, color: "#374151", fontWeight: 600, lineHeight: 1.4, flex: 1, marginTop: item.tag ? 4 : 0 }}>
+                      {item.text}
+                    </Text>
                     <Box style={{ color: "#D1D5DB", fontSize: 16 }}>›</Box>
                   </Box>
                 ))}
