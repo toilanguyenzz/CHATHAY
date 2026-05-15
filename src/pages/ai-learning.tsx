@@ -6,12 +6,11 @@ import { studyService } from "../services/studyService";
 import { apiClient } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 import { useAnimatedNumber } from "../hooks/useAnimatedNumber";
-import { getGreeting } from "../utils/greeting";
 import {
-  IconBrain, IconCoin, IconFire, IconFlashcard, IconQuiz,
-  IconCheck, IconChevronLeft, IconChevronRight, IconLightbulb,
-  IconRefresh, IconAlertTriangle, IconDoc, IconUpload, IconSearch,
-  IconFolder, IconCamera, IconInbox
+  IconBrain, IconFire, IconFlashcard, IconQuiz,
+  IconChevronLeft, IconChevronRight, IconLightbulb,
+  IconRefresh, IconAlertTriangle, IconDoc, IconFolder,
+  IconCamera, IconInbox, IconUpload
 } from "../components/icons";
 
 /* ─── Skeleton ─── */
@@ -31,25 +30,9 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-/* ─── Section Header ─── */
-function SectionHeader({ title, actionLabel, onAction }: { title: string; actionLabel?: string; onAction?: () => void }) {
-  return (
-    <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-      <Text className="ch-section-title" style={{ marginBottom: 0 }}>{title}</Text>
-      {actionLabel && onAction && (
-        <Box onClick={onAction} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-          <Text style={{ fontSize: 12, fontWeight: 700, color: "var(--color-primary)" }}>{actionLabel}</Text>
-          <IconChevronRight size={14} color="var(--color-primary)" />
-        </Box>
-      )}
-    </Box>
-  );
-}
-
 function AILearningPage() {
   const navigate = useNavigate();
   const { user_id } = useAuth();
-  const greeting = getGreeting();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [coinBalance, setCoinBalance] = useState(0);
@@ -81,8 +64,9 @@ function AILearningPage() {
   useEffect(() => { loadData(); }, [user_id]);
 
   const animatedCoin = useAnimatedNumber(coinBalance);
+  const totalFlashcards = docs.reduce((a, d) => a + (d.flashcard_count || 0), 0);
+  const totalQuiz = docs.reduce((a, d) => a + (d.quiz_count || 0), 0);
 
-  /* ─── Camera upload for "Chụp SGK → Quiz" ─── */
   const handleCameraCapture = () => {
     if (fileInputRef.current) {
       fileInputRef.current.accept = "image/*";
@@ -94,312 +78,293 @@ function AILearningPage() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      await documentService.uploadAndProcess(file);
-      loadData();
-    } catch { }
+    try { await documentService.uploadAndProcess(file); loadData(); } catch { }
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  /* ─── Student Features ─── */
+  /* ─── Consolidated Features ─── */
   const studentFeatures = [
     {
-      icon: <IconCamera size={24} color="white" />, 
-      title: "Chụp SGK → Quiz",
-      desc: "Chụp 1 trang sách → AI tạo 5 câu Quiz trong 15 giây",
-      gradient: "linear-gradient(135deg, #3B82F6, #1D4ED8)",
-      action: handleCameraCapture,
+      icon: <IconQuiz size={26} color="white" />,
+      title: "Làm Quiz",
+      desc: "Chụp SGK hoặc chọn tài liệu → AI tạo quiz trắc nghiệm có đếm giờ",
+      gradient: "linear-gradient(135deg, #7C3AED, #6366F1)",
+      shadow: "rgba(124,58,237,0.35)",
+      action: () => docs.length > 0 ? navigate("/quiz") : handleCameraCapture(),
+      badge: totalQuiz > 0 ? `${totalQuiz} câu` : null,
     },
     {
-      icon: <IconBrain size={24} color="white" />, 
-      title: "Study Mode",
-      desc: "Tóm tắt → Quiz → Flashcard SM-2 — Luồng học sâu tự động",
-      gradient: "linear-gradient(135deg, #8B5CF6, #6D28D9)",
-      action: () => docs.length > 0 ? navigate("/quiz") : navigate("/file-processing"),
-    },
-    {
-      icon: <IconFlashcard size={24} color="white" />, 
-      title: "Flashcard 3D",
-      desc: "Ôn tập thẻ ghi nhớ với thuật toán SM-2 lặp lại ngắt quãng",
+      icon: <IconFlashcard size={26} color="white" />,
+      title: "Flashcard",
+      desc: "Ôn tập thẻ ghi nhớ SM-2 — lặp lại ngắt quãng, nhớ lâu hơn 3x",
       gradient: "linear-gradient(135deg, #F59E0B, #D97706)",
+      shadow: "rgba(245,158,11,0.35)",
       action: () => navigate("/flashcard"),
+      badge: totalFlashcards > 0 ? `${totalFlashcards} thẻ` : null,
     },
     {
-      icon: <IconQuiz size={24} color="white" />, 
-      title: "Quiz Timer",
-      desc: "Kiểm tra kiến thức có đếm ngược 30s + âm thanh phản hồi",
-      gradient: "linear-gradient(135deg, #EC4899, #DB2777)",
-      action: () => navigate("/quiz"),
-    },
-    {
-      icon: <IconInbox size={24} color="white" />, 
-      title: "Hỏi Đáp Q&A",
-      desc: "Hỏi AI bất kỳ câu gì — trả lời chính xác từ tài liệu (RAG)",
-      gradient: "linear-gradient(135deg, #6366F1, #4F46E5)",
+      icon: <IconInbox size={26} color="white" />,
+      title: "Hỏi Đáp AI",
+      desc: "Hỏi bất kỳ câu gì — AI trả lời chính xác từ tài liệu của bạn (RAG)",
+      gradient: "linear-gradient(135deg, #3B82F6, #1D4ED8)",
+      shadow: "rgba(59,130,246,0.35)",
       action: () => navigate("/file-processing"),
-    },
-    {
-      icon: <IconUpload size={24} color="white" />, 
-      title: "Chia Sẻ Kết Quả",
-      desc: "Chia sẻ điểm Quiz & Flashcard qua Zalo — thách đấu bạn bè",
-      gradient: "linear-gradient(135deg, #14B8A6, #0D9488)",
-      action: () => navigate("/quiz"),
+      badge: null,
     },
   ];
 
   const teacherFeatures = [
     {
-      icon: <IconDoc size={24} color="white" />, 
-      title: "Tạo Đề Thi Tự Động",
-      desc: "Upload tài liệu → AI ra đề 20 câu trắc nghiệm + đáp án",
+      icon: <IconDoc size={26} color="white" />,
+      title: "Tạo Đề Thi",
+      desc: "Upload tài liệu → AI ra đề trắc nghiệm + đáp án tự động",
       gradient: "linear-gradient(135deg, #3B82F6, #1E40AF)",
+      shadow: "rgba(59,130,246,0.35)",
       action: () => navigate("/file-processing"),
+      badge: null,
     },
     {
-      icon: <IconBrain size={24} color="white" />, 
-      title: "Dashboard Lớp Học",
-      desc: "Xem học sinh nào yếu chỗ nào → AI gợi ý bài ôn tập",
-      gradient: "linear-gradient(135deg, #8B5CF6, #7C3AED)",
-      action: () => alert("Tính năng sắp ra mắt!"),
-    },
-    {
-      icon: <IconUpload size={24} color="white" />, 
-      title: "Giao Bài Qua Zalo",
+      icon: <IconUpload size={26} color="white" />,
+      title: "Giao Bài Zalo",
       desc: "Gửi link Quiz/Flashcard cho cả lớp — 1 click là xong",
       gradient: "linear-gradient(135deg, #22C55E, #16A34A)",
-      action: () => alert("Tính năng sắp ra mắt!"),
+      shadow: "rgba(34,197,94,0.35)",
+      action: () => navigate("/leaderboard"),
+      badge: null,
     },
     {
-      icon: <IconFolder size={24} color="white" />, 
+      icon: <IconFolder size={26} color="white" />,
       title: "Kho Tài Liệu",
-      desc: "Quản lý bộ đề, tóm tắt — tìm kiếm & lọc theo loại file",
+      desc: "Quản lý bộ đề, tóm tắt — tìm kiếm & lọc theo môn học",
       gradient: "linear-gradient(135deg, #F59E0B, #D97706)",
+      shadow: "rgba(245,158,11,0.35)",
       action: () => navigate("/vault"),
+      badge: docs.length > 0 ? `${docs.length} file` : null,
     },
   ];
 
   const features = activeRole === "student" ? studentFeatures : teacherFeatures;
+
+  // ── Streak days ──
+  const dayLabels = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+  const todayIdx = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
 
   return (
     <Page className="ch-page">
       <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
         onChange={handleFileUpload} style={{ display: "none" }} />
 
-      <Box className="ch-container ch-stagger" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Box className="ch-container ch-stagger" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* ══════ HEADER ══════ */}
         <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <Box style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Box style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Box onClick={() => navigate("/")} style={{
-              width: 38, height: 38, borderRadius: "var(--radius-full)",
-              background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+              width: 38, height: 38, borderRadius: 14,
+              background: "white", border: "1px solid #E5E7EB",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-            }}><IconChevronLeft size={18} color="var(--color-text-secondary)" /></Box>
-            <Box style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <Box style={{
-                width: 46, height: 46, borderRadius: 16,
-                background: "linear-gradient(135deg, #8B5CF6, #EC4899)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 6px 20px rgba(139, 92, 246, 0.30)",
-              }}><IconBrain size={22} color="white" /></Box>
-              <Box>
-                <Text style={{ fontSize: "var(--font-size-xl)", fontWeight: 900, color: "var(--color-text-primary)", letterSpacing: "-0.02em" }}>
-                  AI LEARNING</Text>
-                <Text style={{ fontSize: "var(--font-size-xs)", color: "var(--color-text-tertiary)", fontWeight: 500 }}>
-                  {greeting.emoji} {greeting.text}</Text>
-              </Box>
+              boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+            }}><IconChevronLeft size={18} color="#6B7280" /></Box>
+            <Box>
+              <Text style={{ fontSize: 20, fontWeight: 900, color: "#1E1B4B", letterSpacing: "-0.02em" }}>
+                AI Learning</Text>
+              <Text style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>
+                Học thông minh, nhớ lâu hơn</Text>
             </Box>
           </Box>
           {/* Streak Badge */}
           <Box style={{
-            display: "flex", alignItems: "center", gap: 6,
-            background: streak > 0 ? "#FEF3C7" : "var(--color-bg-subtle)",
-            borderRadius: "var(--radius-full)", padding: "6px 14px",
+            display: "flex", alignItems: "center", gap: 5,
+            background: streak > 0 ? "linear-gradient(135deg, #FEF3C7, #FDE68A)" : "#F3F4F6",
+            borderRadius: 20, padding: "6px 14px",
+            border: streak > 0 ? "1px solid #FCD34D" : "1px solid #E5E7EB",
           }}>
-            <IconFire size={16} color={streak > 0 ? "#F97316" : "#9E9BB8"} />
-            <Text style={{ fontSize: 13, fontWeight: 800, color: streak > 0 ? "#B45309" : "var(--color-text-tertiary)" }}>
-              {streak} ngày</Text>
+            <IconFire size={15} color={streak > 0 ? "#F97316" : "#9CA3AF"} />
+            <Text style={{ fontSize: 13, fontWeight: 800, color: streak > 0 ? "#B45309" : "#9CA3AF" }}>
+              {streak}</Text>
           </Box>
         </Box>
 
         {error ? <ErrorState onRetry={loadData} /> : (
           <>
-            {/* ══════ COIN WALLET (compact) ══════ */}
+            {/* ══════ COIN + STATS ROW ══════ */}
             <Box style={{
-              background: "linear-gradient(135deg, #8B5CF6, #EC4899)",
-              borderRadius: "var(--radius-xl)", padding: "20px 22px",
+              background: "linear-gradient(135deg, #4F46E5, #7C3AED, #EC4899)",
+              borderRadius: 22, padding: "18px 20px",
               position: "relative", overflow: "hidden",
             }}>
               <Box style={{
-                position: "absolute", top: "-50%", right: "-30%",
-                width: 180, height: 180, borderRadius: "50%",
-                background: "rgba(255,255,255,0.08)", animation: "floatOrb 8s ease-in-out infinite",
+                position: "absolute", top: -40, right: -30,
+                width: 140, height: 140, borderRadius: "50%",
+                background: "rgba(255,255,255,0.07)",
               }} />
-              <Box style={{ position: "relative", zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <Box>
-                  <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Ví Coin học tập</Text>
-                  <Box style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 4 }}>
-                    {loading ? <Skeleton w={80} h={36} r={8} style={{ opacity: 0.3 }} /> : (
-                      <Text style={{ fontSize: 36, fontWeight: 900, color: "white", letterSpacing: "-0.03em", lineHeight: 1 }}>
+              <Box style={{ position: "relative", zIndex: 2 }}>
+                {/* Coin row */}
+                <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <Box style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    {loading ? <Skeleton w={60} h={28} r={8} style={{ opacity: 0.3 }} /> : (
+                      <Text style={{ fontSize: 28, fontWeight: 900, color: "white", letterSpacing: "-0.03em", lineHeight: 1 }}>
                         {animatedCoin.toLocaleString()}</Text>
                     )}
-                    <Text style={{ fontSize: 13, color: "rgba(255,255,255,0.50)", fontWeight: 600 }}>Coin</Text>
+                    <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", fontWeight: 600 }}>Coin</Text>
+                  </Box>
+                  <Box onClick={() => alert("Nạp xu qua ZaloPay...")} style={{
+                    padding: "8px 16px", background: "rgba(255,255,255,0.15)",
+                    backdropFilter: "blur(8px)", borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.2)", cursor: "pointer",
+                  }}>
+                    <Text style={{ color: "white", fontWeight: 700, fontSize: 12 }}>Nạp Xu</Text>
                   </Box>
                 </Box>
-                <Box onClick={() => alert("Nạp xu qua ZaloPay...")} style={{
-                  padding: "10px 18px", background: "rgba(255,255,255,0.18)",
-                  backdropFilter: "blur(8px)", borderRadius: "var(--radius-md)",
-                  border: "1px solid rgba(255,255,255,0.25)", cursor: "pointer",
-                  display: "flex", alignItems: "center", gap: 6,
-                }}>
-                  <Text style={{ color: "white", fontWeight: 700, fontSize: 13 }}>Nạp Xu</Text>
-                  <IconChevronRight size={14} color="rgba(255,255,255,0.7)" />
+                {/* Stats */}
+                <Box style={{ display: "flex", gap: 8 }}>
+                  {[
+                    { label: "Tài liệu", value: docs.length, icon: <IconDoc size={16} color="rgba(255,255,255,0.8)" /> },
+                    { label: "Flashcard", value: totalFlashcards, icon: <IconFlashcard size={16} color="rgba(255,255,255,0.8)" /> },
+                    { label: "Quiz", value: totalQuiz, icon: <IconQuiz size={16} color="rgba(255,255,255,0.8)" /> },
+                  ].map((s, i) => (
+                    <Box key={i} style={{
+                      flex: 1, textAlign: "center", padding: "10px 6px",
+                      background: "rgba(255,255,255,0.1)", borderRadius: 14,
+                      backdropFilter: "blur(4px)",
+                    }}>
+                      <Box style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>{s.icon}</Box>
+                      {loading ? <Skeleton w={24} h={20} r={4} style={{ margin: "0 auto", opacity: 0.3 }} /> : (
+                        <Text style={{ fontSize: 18, fontWeight: 900, color: "white", lineHeight: 1 }}>{s.value}</Text>
+                      )}
+                      <Text style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", fontWeight: 600, marginTop: 2 }}>{s.label}</Text>
+                    </Box>
+                  ))}
                 </Box>
               </Box>
             </Box>
 
-            {/* ══════ ROLE SWITCHER: Học Sinh / Giáo Viên ══════ */}
+            {/* ══════ ROLE SWITCHER ══════ */}
             <Box style={{
-              display: "flex", gap: 0, borderRadius: "var(--radius-full)",
-              background: "var(--color-bg-subtle)", padding: 4,
-              border: "1px solid var(--color-border)",
+              display: "flex", borderRadius: 16, background: "#F3F4F6", padding: 3,
             }}>
               {[
-                { key: "student" as const, label: "📚 Học Sinh", count: studentFeatures.length },
-                { key: "teacher" as const, label: "👩‍🏫 Giáo Viên", count: teacherFeatures.length },
+                { key: "student" as const, label: "Học Sinh" },
+                { key: "teacher" as const, label: "Giáo Viên" },
               ].map(role => (
                 <Box key={role.key} onClick={() => setActiveRole(role.key)} style={{
                   flex: 1, textAlign: "center", padding: "10px 0",
-                  borderRadius: "var(--radius-full)", cursor: "pointer",
-                  background: activeRole === role.key ? "var(--color-bg-card)" : "transparent",
-                  boxShadow: activeRole === role.key ? "var(--shadow-sm)" : "none",
-                  transition: "all 0.3s",
+                  borderRadius: 14, cursor: "pointer",
+                  background: activeRole === role.key ? "white" : "transparent",
+                  boxShadow: activeRole === role.key ? "0 2px 8px rgba(0,0,0,0.08)" : "none",
+                  transition: "all 0.25s ease",
                 }}>
                   <Text style={{
                     fontSize: 13, fontWeight: activeRole === role.key ? 800 : 600,
-                    color: activeRole === role.key ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+                    color: activeRole === role.key ? "#1E1B4B" : "#9CA3AF",
                   }}>{role.label}</Text>
                 </Box>
               ))}
             </Box>
 
-            {/* ══════ LEARNING STATS ROW ══════ */}
-            <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-              {[
-                { label: "Tài liệu", value: docs.length, icon: <IconDoc size={20} color="#3B82F6" />, accent: "#3B82F6" },
-                { label: "Flashcard", value: docs.reduce((a, d) => a + (d.flashcard_count || 0), 0), icon: <IconFlashcard size={20} color="#8B5CF6" />, accent: "#8B5CF6" },
-                { label: "Quiz", value: docs.reduce((a, d) => a + (d.quiz_count || 0), 0), icon: <IconQuiz size={20} color="#EC4899" />, accent: "#EC4899" },
-              ].map((s, idx) => (
-                <Box key={idx} className="ch-stat-pill">
-                  <Box style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>{s.icon}</Box>
-                  {loading ? <Skeleton w={30} h={26} r={6} style={{ margin: "0 auto" }} /> : (
-                    <Text style={{ fontSize: 24, fontWeight: 900, color: s.accent, letterSpacing: "-0.02em", lineHeight: 1 }}>
-                      {s.value}</Text>
-                  )}
-                  <Text style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                    {s.label}</Text>
+            {/* ══════ FEATURE CARDS — Clean list style ══════ */}
+            <Box style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {features.map((f, idx) => (
+                <Box key={idx} onClick={f.action} style={{
+                  display: "flex", alignItems: "center", gap: 14,
+                  padding: "16px 18px", borderRadius: 20, cursor: "pointer",
+                  background: "white", border: "1px solid #E5E7EB",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                  transition: "all 0.2s ease",
+                  position: "relative", overflow: "hidden",
+                }}>
+                  {/* Icon */}
+                  <Box style={{
+                    width: 52, height: 52, borderRadius: 16, flexShrink: 0,
+                    background: f.gradient,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    boxShadow: `0 6px 16px ${f.shadow}`,
+                  }}>{f.icon}</Box>
+                  {/* Text */}
+                  <Box style={{ flex: 1, minWidth: 0 }}>
+                    <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                      <Text style={{ fontSize: 15, fontWeight: 800, color: "#1F2937" }}>{f.title}</Text>
+                      {f.badge && (
+                        <Box style={{
+                          padding: "2px 8px", borderRadius: 8,
+                          background: "#EEF2FF", border: "1px solid #C7D2FE",
+                        }}>
+                          <Text style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5" }}>{f.badge}</Text>
+                        </Box>
+                      )}
+                    </Box>
+                    <Text style={{
+                      fontSize: 12, color: "#6B7280", lineHeight: 1.5, fontWeight: 500,
+                    }}>{f.desc}</Text>
+                  </Box>
+                  {/* Arrow */}
+                  <IconChevronRight size={18} color="#D1D5DB" />
                 </Box>
               ))}
             </Box>
 
-            {/* ══════ FEATURE CARDS ══════ */}
-            <Box>
-              <SectionHeader
-                title={activeRole === "student" ? "Công cụ Học Sinh" : "Công cụ Giáo Viên"}
-              />
-              <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {features.map((f, idx) => (
-                  <Box key={idx} onClick={f.action} className="ch-bento-card" style={{
-                    display: "flex", flexDirection: "column",
-                    padding: "16px 14px", borderRadius: 20, cursor: "pointer",
-                    background: "white", border: "1px solid #E5E7EB",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-                    position: "relative", overflow: "hidden",
-                  }}>
-                    {/* Decorative subtle background icon */}
-                    <Box style={{
-                      position: "absolute", right: -10, top: -5, opacity: 0.05,
-                      fontSize: 60, pointerEvents: "none", filter: "grayscale(1)",
-                    }}>{f.icon}</Box>
-                    
-                    <Box style={{
-                      width: 42, height: 42, borderRadius: 14,
-                      background: f.gradient,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      marginBottom: 12, boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                    }}>
-                      <Text style={{ fontSize: 20, lineHeight: 1 }}>{f.icon}</Text>
-                    </Box>
-                    
-                    <Text style={{
-                      fontSize: 14, fontWeight: 800, color: "#1F2937",
-                      marginBottom: 4, lineHeight: 1.3,
-                    }}>{f.title}</Text>
-                    
-                    <Text style={{
-                      fontSize: 11, color: "#6B7280", lineHeight: 1.4, fontWeight: 500,
-                      display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden"
-                    }}>{f.desc}</Text>
-                  </Box>
-                ))}
-              </Box>
-            </Box>
-
             {/* ══════ STREAK PROGRESS ══════ */}
             <Box style={{
-              padding: "18px 20px", borderRadius: "var(--radius-xl)",
-              background: streak > 0 ? "#FEF3C7" : "var(--color-bg-subtle)",
-              border: `1px solid ${streak > 0 ? "rgba(245,158,11,0.2)" : "var(--color-border)"}`,
+              padding: "16px 18px", borderRadius: 20,
+              background: streak > 0 ? "linear-gradient(135deg, #FFFBEB, #FEF3C7)" : "#F9FAFB",
+              border: `1px solid ${streak > 0 ? "#FDE68A" : "#E5E7EB"}`,
             }}>
-              <Box style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-                <IconFire size={24} color={streak > 0 ? "#F97316" : "#9E9BB8"} />
-                <Box>
-                  <Text style={{ fontSize: 14, fontWeight: 800, color: streak > 0 ? "#92400E" : "var(--color-text-primary)" }}>
-                    Chuỗi học tập: {streak} ngày</Text>
-                  <Text style={{ fontSize: 12, color: streak > 0 ? "#B45309" : "var(--color-text-tertiary)" }}>
-                    {streakMaintained ? "✅ Đã hoàn thành hôm nay" : streak > 0 ? "⚠️ Hãy học để giữ streak!" : "Bắt đầu streak đầu tiên!"}
-                  </Text>
+              <Box style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                <IconFire size={20} color={streak > 0 ? "#F97316" : "#9CA3AF"} />
+                <Box style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13, fontWeight: 800, color: streak > 0 ? "#92400E" : "#374151" }}>
+                    Chuỗi: {streak} ngày</Text>
+                  <Text style={{ fontSize: 11, color: streak > 0 ? "#B45309" : "#9CA3AF", fontWeight: 500 }}>
+                    {streakMaintained ? "Đã hoàn thành hôm nay" : streak > 0 ? "Hãy học để giữ streak!" : "Bắt đầu ngay!"}</Text>
                 </Box>
               </Box>
-              {/* 7-day streak visual */}
-              <Box style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
-                {["T2", "T3", "T4", "T5", "T6", "T7", "CN"].map((day, i) => {
-                  const isActive = i < streak % 7 || (streak >= 7);
-                  const isToday = i === new Date().getDay() - 1 || (new Date().getDay() === 0 && i === 6);
+              <Box style={{ display: "flex", gap: 5 }}>
+                {dayLabels.map((day, i) => {
+                  const isActive = i < streak % 7 || streak >= 7;
+                  const isToday = i === todayIdx;
                   return (
                     <Box key={i} style={{
-                      flex: 1, textAlign: "center", padding: "6px 0",
-                      borderRadius: "var(--radius-md)",
-                      background: isActive ? "linear-gradient(135deg, #F59E0B, #EF4444)" : "var(--color-bg-card)",
-                      border: isToday ? "2px solid #F97316" : `1px solid ${isActive ? "transparent" : "var(--color-border)"}`,
+                      flex: 1, textAlign: "center", padding: "5px 0",
+                      borderRadius: 10,
+                      background: isActive ? "linear-gradient(135deg, #F59E0B, #EF4444)" : "white",
+                      border: isToday ? "2px solid #F97316" : `1px solid ${isActive ? "transparent" : "#E5E7EB"}`,
                     }}>
-                      <Text style={{
-                        fontSize: 10, fontWeight: 700,
-                        color: isActive ? "white" : "var(--color-text-tertiary)",
-                      }}>{day}</Text>
-                      <Text style={{ fontSize: 12, lineHeight: 1 }}>{isActive ? "🔥" : "○"}</Text>
+                      <Text style={{ fontSize: 9, fontWeight: 700, color: isActive ? "white" : "#9CA3AF" }}>{day}</Text>
+                      <Text style={{ fontSize: 11, lineHeight: 1 }}>{isActive ? "🔥" : "○"}</Text>
                     </Box>
                   );
                 })}
               </Box>
             </Box>
 
-            {/* ══════ DAILY TIP ══════ */}
-            <Box style={{
-              padding: "16px 18px", borderRadius: "var(--radius-xl)",
-              background: "#F3E8FF", border: "1px solid rgba(139, 92, 246, 0.12)",
-              display: "flex", alignItems: "flex-start", gap: 12,
-            }}>
-              <IconLightbulb size={22} color="#6D28D9" style={{ flexShrink: 0, marginTop: 2 }} />
-              <Box>
-                <Text style={{ fontSize: 13, fontWeight: 700, color: "#6D28D9", marginBottom: 4 }}>
-                  Adaptive Learning</Text>
-                <Text style={{ fontSize: 12, color: "#7C3AED", lineHeight: 1.5 }}>
-                  Hệ thống SM-2 theo dõi điểm yếu của bạn. Câu nào làm sai sẽ tự động xuất hiện lại vào đúng thời điểm bạn sắp quên — giúp ghi nhớ tốt hơn 300%!</Text>
-              </Box>
+            {/* ══════ QUICK LINKS ══════ */}
+            <Box style={{ display: "flex", gap: 8 }}>
+              {[
+                { label: "Demo Quiz", icon: <IconQuiz size={18} color="#F59E0B" />, bg: "#FFFBEB", border: "#FDE68A", action: () => navigate("/demo-quiz") },
+                { label: "Leaderboard", icon: <IconBrain size={18} color="#10B981" />, bg: "#ECFDF5", border: "#A7F3D0", action: () => navigate("/leaderboard") },
+                { label: "Kho tài liệu", icon: <IconDoc size={18} color="#3B82F6" />, bg: "#EFF6FF", border: "#BFDBFE", action: () => navigate("/vault") },
+              ].map((item, i) => (
+                <Box key={i} onClick={item.action} style={{
+                  flex: 1, padding: "12px 8px", borderRadius: 14, textAlign: "center",
+                  background: item.bg, border: `1px solid ${item.border}`, cursor: "pointer",
+                  transition: "all 0.2s",
+                }}>
+                  <Box style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>{item.icon}</Box>
+                  <Text style={{ fontSize: 11, fontWeight: 700, color: "#374151" }}>{item.label}</Text>
+                </Box>
+              ))}
             </Box>
 
+            {/* ══════ TIP ══════ */}
+            <Box style={{
+              padding: "14px 16px", borderRadius: 16,
+              background: "#F3E8FF", border: "1px solid #DDD6FE",
+              display: "flex", alignItems: "flex-start", gap: 10,
+            }}>
+              <IconLightbulb size={18} color="#7C3AED" style={{ flexShrink: 0, marginTop: 2 }} />
+              <Text style={{ fontSize: 12, color: "#6D28D9", lineHeight: 1.5, fontWeight: 500 }}>
+                <strong>SM-2:</strong> Câu nào làm sai sẽ tự xuất hiện lại vào đúng lúc bạn sắp quên — ghi nhớ tốt hơn 300%!</Text>
+            </Box>
           </>
         )}
       </Box>
