@@ -280,9 +280,6 @@ def get_document_content(user_id: str, doc_id: str) -> dict[str, Any] | None:
     """
     # First try to get raw text from temp storage
     raw_text = get_document_text_temp(user_id, doc_id)
-    if not raw_text:
-        logger.warning("No temp text found for user=%s, doc=%s", user_id, doc_id)
-        return None
 
     supabase = get_supabase_client()
 
@@ -291,11 +288,11 @@ def get_document_content(user_id: str, doc_id: str) -> dict[str, Any] | None:
         try:
             result = supabase.table("documents").select("content").eq("id", doc_id).eq("user_id", user_id).execute()
             if result.data:
-                db_content = result.data[0].get("content", {})
+                db_content = result.data[0].get("content") or {}
                 # Nếu DB đã có chunks và embeddings, dùng luôn
                 if db_content.get("chunks") and db_content.get("embeddings"):
                     return {
-                        "text": raw_text,
+                        "text": raw_text or "",
                         "chunks": db_content["chunks"],
                         "embeddings": db_content["embeddings"],
                     }
@@ -307,10 +304,15 @@ def get_document_content(user_id: str, doc_id: str) -> dict[str, Any] | None:
     if mem_content:
         logger.info("Using memory fallback RAG content for user=%s, doc=%s", user_id[:8], doc_id[:8])
         return {
-            "text": raw_text,
+            "text": raw_text or "",
             "chunks": mem_content["chunks"],
             "embeddings": mem_content["embeddings"],
         }
+
+    # Nếu không có chunks từ DB/memory và cũng KHÔNG CÓ raw text, lúc này mới fail
+    if not raw_text:
+        logger.warning("No temp text and no cached chunks for user=%s, doc=%s", user_id, doc_id)
+        return None
 
     # Return raw text only (chunks will be generated on-the-fly)
     return {"text": raw_text, "chunks": None, "embeddings": None}
