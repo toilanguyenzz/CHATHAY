@@ -10,7 +10,7 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 SUPABASE_URL = "https://zylckskdbbhiohbacxkd.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5bGNrc2tkYmJoaW9oYmFjeGtkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Njg0MjE0NiwiZXhwIjoyMDkyNDE4MTQ2fQ.P5mNuHcxa8hxnbHgW16okSbabTHC7we75ojsAfPMyXw"
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 
 def main():
     migration_path = Path(__file__).parent / "migrations" / "006_shared_quiz.sql"
