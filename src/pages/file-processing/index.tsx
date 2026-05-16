@@ -64,11 +64,23 @@ async function compressImage(file: File, maxWidth = 1024, maxHeight = 1024, qual
   });
 }
 
+// 🔒 DEMO MODE: Lock features except Quiz & Flashcard
+const DEMO_MODE = true;
+
 function FileProcessingPage() {
   const navigate = useNavigate();
   const { user_id } = useAuth();
   const { sharedFile, clearSharedFile } = useSharedFile();
   const greeting = getGreeting();
+  const [showLockModal, setShowLockModal] = useState(false);
+
+  const lockFeature = (featureName: string) => {
+    if (DEMO_MODE) {
+      setShowLockModal(true);
+      return true;
+    }
+    return false;
+  };
 
   const [docs, setDocs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -430,67 +442,160 @@ function FileProcessingPage() {
           </Box>
         </Box>
 
-        {/* QUICK ACTIONS */}
-        <FileUploadSection
-          onFileSelect={uploadFile}
-          uploading={uploading}
-          uploadProgress={uploadProgress}
-        />
+        {/* QUICK ACTIONS — LOCKED IN DEMO */}
+        <Box style={{ position: "relative" }}>
+          <FileUploadSection
+            onFileSelect={uploadFile}
+            uploading={uploading}
+            uploadProgress={uploadProgress}
+          />
+          {DEMO_MODE && (
+            <Box onClick={() => lockFeature("upload")} style={{
+              position: "absolute", inset: 0, borderRadius: "var(--radius-xl)",
+              background: "rgba(255,255,255,0.5)", backdropFilter: "blur(2px)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              cursor: "pointer", zIndex: 10,
+            }}>
+              <Box style={{
+                padding: "10px 20px", borderRadius: "var(--radius-full)",
+                background: "rgba(0,0,0,0.7)", color: "white",
+                fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 6,
+              }}>
+                🔒 Sắp ra mắt
+              </Box>
+            </Box>
+          )}
+        </Box>
 
-        {/* SOLVE PROBLEM SECTION */}
-        <Box
-          style={{
-            padding: "16px",
-            borderRadius: "var(--radius-xl)",
-            background: "linear-gradient(135deg, #FEF3C7, #FDE68A)",
-            border: "2px solid #F59E0B",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 14,
-            boxShadow: "0 8px 24px rgba(245,158,11,0.25)",
-            transition: "all 0.2s",
-          }}
-          onClick={() => solveCameraRef.current?.click()}
-        >
+        {/* SOLVE PROBLEM SECTION — LOCKED IN DEMO */}
+        <Box style={{ position: "relative" }}>
           <Box
             style={{
-              width: 52,
-              height: 52,
-              borderRadius: "var(--radius-md)",
-              background: "white",
+              padding: "16px",
+              borderRadius: "var(--radius-xl)",
+              background: "linear-gradient(135deg, #FEF3C7, #FDE68A)",
+              border: "2px solid #F59E0B",
+              cursor: "pointer",
               display: "flex",
               alignItems: "center",
-              justifyContent: "center",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.10)",
+              gap: 14,
+              boxShadow: "0 8px 24px rgba(245,158,11,0.25)",
+              transition: "all 0.2s",
             }}
+            onClick={() => DEMO_MODE ? lockFeature("solve") : solveCameraRef.current?.click()}
           >
-            <Text style={{ fontSize: 28 }}>📝</Text>
-          </Box>
-          <Box style={{ flex: 1 }}>
-            <Text style={{ fontSize: 15, fontWeight: 800, color: "#92400E", marginBottom: 4 }}>
-              ✨ Giải bài tập AI
-            </Text>
-            <Text style={{ fontSize: 12, color: "#B45309", lineHeight: 1.4 }}>
-              Chụp ảnh bài tập → AI giải từng bước, giải thích "tại sao"
-            </Text>
-          </Box>
-          <Box style={{ padding: "6px 12px", borderRadius: "var(--radius-full)", background: "#F59E0B", color: "white", fontSize: 11, fontWeight: 800 }}>
-            MỚI
+            <Box
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: "var(--radius-md)",
+                background: "white",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.10)",
+              }}
+            >
+              <Text style={{ fontSize: 28 }}>📝</Text>
+            </Box>
+            <Box style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontWeight: 800, color: "#92400E", marginBottom: 4 }}>
+                ✨ Giải bài tập AI
+              </Text>
+              <Text style={{ fontSize: 12, color: "#B45309", lineHeight: 1.4 }}>
+                Chụp ảnh bài tập → AI giải từng bước, giải thích "tại sao"
+              </Text>
+            </Box>
+            <Box style={{ padding: "6px 12px", borderRadius: "var(--radius-full)", background: "#F59E0B", color: "white", fontSize: 11, fontWeight: 800 }}>
+              SẮP RA MẮT
+            </Box>
           </Box>
         </Box>
 
         {/* SOLVE RESULT */}
-        {solveResult && (
+        {solveResult && !DEMO_MODE && (
           <SolveResultPanel
             result={solveResult}
             onClose={() => setSolveResult(null)}
             onCreateQuiz={() => {
-              // TODO: Create quiz from solution
               setToast({ message: "🧠 Đang tạo quiz...", type: "info" });
             }}
           />
         )}
+
+        {/* ═══ KHO ĐỀ THI - PUBLIC LIBRARY ═══ */}
+        <Box style={{ marginTop: 8 }}>
+          <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <Text style={{ fontSize: 17, fontWeight: 900, color: "var(--color-text-primary)" }}>
+              📚 Kho Đề Thi
+            </Text>
+            <Box onClick={() => navigate("/quiz")} style={{
+              padding: "6px 14px", borderRadius: "var(--radius-full)",
+              background: "var(--color-primary-lighter)",
+              cursor: "pointer",
+            }}>
+              <Text style={{ fontSize: 12, fontWeight: 700, color: "var(--color-primary)" }}>Xem tất cả →</Text>
+            </Box>
+          </Box>
+
+          {/* Subject Tags */}
+          <Box style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+            {["📖 Tất cả", "🇬🇧 Tiếng Anh", "📜 Lịch Sử", "🧮 Toán", "🧪 Hóa", "⚡ Lý", "🌱 Sinh"].map((tag) => (
+              <Box key={tag} style={{
+                padding: "8px 16px", borderRadius: "var(--radius-full)",
+                background: tag.includes("Tất cả") ? "var(--gradient-primary)" : "var(--color-bg-subtle)",
+                color: tag.includes("Tất cả") ? "white" : "var(--color-text-secondary)",
+                fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", cursor: "pointer",
+                border: tag.includes("Tất cả") ? "none" : "1px solid var(--color-border)",
+                flexShrink: 0,
+              }}>{tag}</Box>
+            ))}
+          </Box>
+
+          {/* Exam Cards */}
+          <Box style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {docs.length > 0 ? docs.slice(0, 8).map((doc: any) => (
+              <Box key={doc.id} style={{
+                padding: "14px 16px", borderRadius: 14,
+                background: "var(--color-bg-card)", border: "1px solid var(--color-border)",
+                display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+                transition: "all 0.15s",
+              }} onClick={() => navigate(`/quiz?doc_id=${doc.id}`)}>
+                <Box style={{
+                  width: 44, height: 44, borderRadius: 12,
+                  background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                }}>
+                  <Text style={{ fontSize: 22 }}>📝</Text>
+                </Box>
+                <Box style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{
+                    fontSize: 14, fontWeight: 700, color: "var(--color-text-primary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>{doc.name || "Đề thi"}</Text>
+                  <Text style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 2 }}>
+                    Quiz • Flashcard
+                  </Text>
+                </Box>
+                <Box style={{
+                  padding: "6px 12px", borderRadius: "var(--radius-full)",
+                  background: "linear-gradient(135deg,#8B5CF6,#7C3AED)",
+                  color: "white", fontSize: 11, fontWeight: 700,
+                }}>Làm bài</Box>
+              </Box>
+            )) : (
+              <Box style={{
+                padding: 24, textAlign: "center", borderRadius: 14,
+                background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+              }}>
+                <Text style={{ fontSize: 32, marginBottom: 8 }}>📭</Text>
+                <Text style={{ fontSize: 14, fontWeight: 700, color: "var(--color-text-secondary)" }}>Chưa có đề thi nào</Text>
+                <Text style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>Đề thi sẽ được cập nhật sớm!</Text>
+              </Box>
+            )}
+          </Box>
+        </Box>
 
         {/* DOCUMENT LIST */}
         <DocumentList
@@ -503,8 +608,8 @@ function FileProcessingPage() {
           onNavigate={(path) => navigate(path)}
         />
 
-        {/* ACTIVE DOC - SUMMARY + Q&A */}
-        {activeDoc && (
+        {/* ACTIVE DOC - SUMMARY + Q&A — HIDDEN IN DEMO */}
+        {activeDoc && !DEMO_MODE && (
           <Box className="ch-card" style={{ padding: 0, overflow: "hidden" }}>
             {/* Header */}
             <Box
@@ -681,6 +786,51 @@ function FileProcessingPage() {
               >
                 Lưu
               </button>
+            </Box>
+          </Box>
+        </Box>
+      )}
+
+      {/* 🔒 LOCK MODAL */}
+      {showLockModal && (
+        <Box
+          onClick={() => setShowLockModal(false)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 10000, padding: 20, backdropFilter: "blur(4px)",
+          }}
+        >
+          <Box
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%", maxWidth: 300, background: "white",
+              borderRadius: 20, padding: "32px 24px", textAlign: "center",
+              boxShadow: "0 24px 48px rgba(0,0,0,0.2)",
+              animation: "scaleIn 0.2s var(--ease-spring)",
+            }}
+          >
+            <Text style={{ fontSize: 48, lineHeight: 1, marginBottom: 12 }}>🔒</Text>
+            <Text style={{ fontSize: 18, fontWeight: 900, color: "var(--color-text-primary)", marginBottom: 8 }}>
+              Sắp ra mắt!
+            </Text>
+            <Text style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 20 }}>
+              Tính năng này đang được phát triển.
+              Hiện tại bạn có thể làm Quiz và Flashcard từ Kho Đề Thi nhé!
+            </Text>
+            <Box style={{ display: "flex", gap: 10 }}>
+              <Box onClick={() => setShowLockModal(false)} style={{
+                flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
+                background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+                cursor: "pointer", fontSize: 14, fontWeight: 700, color: "var(--color-text-secondary)",
+                textAlign: "center",
+              }}>Đóng</Box>
+              <Box onClick={() => { setShowLockModal(false); navigate("/quiz"); }} style={{
+                flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
+                background: "var(--gradient-primary)", border: "none",
+                cursor: "pointer", fontSize: 14, fontWeight: 700, color: "white",
+                textAlign: "center",
+              }}>🧠 Làm Quiz</Box>
             </Box>
           </Box>
         </Box>
