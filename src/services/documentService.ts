@@ -64,6 +64,10 @@ export const documentService = {
     return apiClient.get<Document[]>("/api/miniapp/documents");
   },
 
+  async getPublicExams(): Promise<any[]> {
+    return apiClient.get<any[]>("/api/miniapp/public-exams");
+  },
+
   async getDocument(docId: string): Promise<Document> {
     return apiClient.get<Document>(`/api/miniapp/documents/${docId}`);
   },

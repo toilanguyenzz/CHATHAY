@@ -83,6 +83,7 @@ function FileProcessingPage() {
   };
 
   const [docs, setDocs] = useState<any[]>([]);
+  const [publicExams, setPublicExams] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -104,6 +105,8 @@ function FileProcessingPage() {
     apiClient.setUserId(user_id);
     setLoading(true);
     setError(false);
+
+    // Load user docs
     documentService
       .getDocuments()
       .then((data) => {
@@ -114,6 +117,11 @@ function FileProcessingPage() {
         setError(true);
         setLoading(false);
       });
+
+    // Load public exams library
+    documentService.getPublicExams()
+      .then((data) => setPublicExams(Array.isArray(data) ? data : []))
+      .catch(() => {});
   }, [user_id]);
 
   useEffect(() => {
@@ -554,7 +562,7 @@ function FileProcessingPage() {
 
           {/* Exam Cards */}
           <Box style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {docs.length > 0 ? docs.slice(0, 8).map((doc: any) => (
+            {publicExams.length > 0 ? publicExams.slice(0, 8).map((doc: any) => (
               <Box key={doc.id} style={{
                 padding: "14px 16px", borderRadius: 14,
                 background: "var(--color-bg-card)", border: "1px solid var(--color-border)",

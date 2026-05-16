@@ -37,6 +37,11 @@ function SharedQuizPage() {
   const [timePerQuestion, setTimePerQuestion] = useState<number[]>([]);
   const [startTime, setStartTime] = useState<number>(0);
 
+  // Student info for shared quiz (no login required)
+  const [studentName, setStudentName] = useState("");
+  const [studentPhone, setStudentPhone] = useState("");
+  const [showStudentForm, setShowStudentForm] = useState(true);
+
   // Load quiz info
   useEffect(() => {
     if (!shareCode) return;
@@ -62,18 +67,25 @@ function SharedQuizPage() {
   };
 
   const startQuiz = async () => {
-    if (!user_id || !shareCode) return;
+    if (!shareCode) return;
+
+    // Validate student info
+    if (!studentName.trim() || !studentPhone.trim()) {
+      alert("Vui lòng nhập đầy đủ họ tên và số điện thoại!");
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await fetch(
         `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/shared-quiz/${shareCode}/start`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-User-Id": user_id,
-          },
-          body: JSON.stringify({ user_id }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            student_name: studentName.trim(),
+            student_phone: studentPhone.trim()
+          }),
         }
       );
 
@@ -94,6 +106,7 @@ function SharedQuizPage() {
       });
       setQuizStarted(true);
       setStartTime(Date.now());
+      setShowStudentForm(false);
     } catch (err) {
       console.error("Failed to start quiz:", err);
       alert("Không thể bắt đầu quiz. Vui lòng thử lại.");
@@ -157,7 +170,7 @@ function SharedQuizPage() {
   };
 
   const finishQuiz = async () => {
-    if (!user_id || !shareCode || !quizData) return;
+    if (!shareCode || !quizData) return;
     setQuizDone(true);
 
     const total_time = Date.now() - startTime;
@@ -167,13 +180,10 @@ function SharedQuizPage() {
         `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/shared-quiz/${shareCode}/submit`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-User-Id": user_id,
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            user_id,
-            display_name: user_id, // TODO: Get from user profile
+            student_name: studentName.trim(),
+            student_phone: studentPhone.trim(),
             answers: answers.map((a, i) => ({
               ...a,
               time_spent: timePerQuestion[i] || 30,
@@ -224,13 +234,47 @@ function SharedQuizPage() {
               Thời gian: 30s/câu
             </Text>
           </Box>
-          <Box
-            className="ch-btn-primary"
-            onClick={startQuiz}
-            style={{ width: "100%", maxWidth: 280, justifyContent: "center", background: "linear-gradient(135deg, #10B981, #059669)", padding: "16px" }}
-          >
-            <Text style={{ fontSize: 16, fontWeight: 800 }}>Bắt đầu làm bài</Text>
-          </Box>
+
+          {/* Student Info Form */}
+          {showStudentForm && (
+            <Box style={{
+              width: "100%", maxWidth: 320,
+              padding: 20, borderRadius: 16,
+              background: "var(--color-bg-subtle)",
+              border: "1px solid var(--color-border)",
+            }}>
+              <Text style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>📝 Thông tin học sinh:</Text>
+              <input
+                type="text"
+                value={studentName}
+                onChange={(e) => setStudentName(e.target.value)}
+                placeholder="Họ và tên đầy đủ"
+                style={{
+                  width: "100%", padding: 12, marginBottom: 10,
+                  borderRadius: 8, border: "1px solid var(--color-border)",
+                  fontSize: 14,
+                }}
+              />
+              <input
+                type="tel"
+                value={studentPhone}
+                onChange={(e) => setStudentPhone(e.target.value)}
+                placeholder="Số điện thoại"
+                style={{
+                  width: "100%", padding: 12, marginBottom: 12,
+                  borderRadius: 8, border: "1px solid var(--color-border)",
+                  fontSize: 14,
+                }}
+              />
+              <Box
+                className="ch-btn-primary"
+                onClick={startQuiz}
+                style={{ width: "100%", justifyContent: "center", background: "linear-gradient(135deg, #10B981, #059669)", padding: 14 }}
+              >
+                <Text style={{ fontSize: 15, fontWeight: 800 }}>Bắt đầu làm bài</Text>
+              </Box>
+            </Box>
+          )}
         </Box>
       </Page>
     );
