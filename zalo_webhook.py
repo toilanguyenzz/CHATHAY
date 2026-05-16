@@ -159,6 +159,9 @@ ZALO_VERIFICATION_CODE = os.getenv(
     "ZALO_VERIFICATION_CODE",
     "VyM34AN4DmzorQGojDui9ZNWYXdPbbz5DZ0t",
 )
+# Mini App deep link — user bấm nút trong chat OA → mở Mini App
+MINI_APP_ID = os.getenv("MINI_APP_ID", "3808182984931331933")
+MINI_APP_URL = f"https://zalo.me/s/{MINI_APP_ID}/"
 
 # ═══════════════════════════════════════════════════════════════
 # STATE
@@ -342,6 +345,95 @@ def increment_qa_usage(user_id: str):
     if user_id not in user_qa_usage or user_qa_usage[user_id]["date"] != today:
         user_qa_usage[user_id] = {"date": today, "count": 0}
     user_qa_usage[user_id]["count"] = int(user_qa_usage[user_id]["count"]) + 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# FEATURE-SPECIFIC RATE LIMITS (Beta Test - 4 Core Features)
+# ═══════════════════════════════════════════════════════════════
+
+_feature_usage = {}  # {user_id: {feature: {date: str, count: int}}}
+
+
+def check_feature_limit(user_id: str, feature: str, limit: int) -> bool:
+    """Kiểm tra giới hạn cho từng tính năng cụ thể.
+
+    Args:
+        user_id: ID người dùng
+        feature: Tên tính năng (solve_problem, ai_learning, quiz, flashcard)
+        limit: Giới hạn tối đa cho phép/ngày
+
+    Returns:
+        True nếu user còn hạn sử dụng, False nếu đã hết
+    """
+    today = time.strftime("%Y-%m-%d")
+
+    if user_id not in _feature_usage:
+        _feature_usage[user_id] = {}
+
+    if feature not in _feature_usage[user_id]:
+        _feature_usage[user_id][feature] = {"date": today, "count": 0}
+
+    usage = _feature_usage[user_id][feature]
+
+    # Reset nếu ngày mới
+    if usage["date"] != today:
+        _feature_usage[user_id][feature] = {"date": today, "count": 0}
+        return True
+
+    return int(usage["count"]) < limit
+
+
+def increment_feature_usage(user_id: str, feature: str):
+    """Tăng usage count cho tính năng cụ thể."""
+    today = time.strftime("%Y-%m-%d")
+
+    if user_id not in _feature_usage:
+        _feature_usage[user_id] = {}
+
+    if feature not in _feature_usage[user_id]:
+        _feature_usage[user_id][feature] = {"date": today, "count": 0}
+
+    usage = _feature_usage[user_id][feature]
+
+    # Reset nếu ngày mới
+    if usage["date"] != today:
+        _feature_usage[user_id][feature] = {"date": today, "count": 0}
+
+    _feature_usage[user_id][feature]["count"] = int(usage["count"]) + 1
+
+
+# Feature helper functions
+def check_solve_problem_limit(user_id: str) -> bool:
+    """Kiểm tra giới hạn giải bài tập."""
+    return check_feature_limit(user_id, "solve_problem", config.SOLVE_PROBLEM_DAILY_LIMIT)
+
+def check_ai_learning_limit(user_id: str) -> bool:
+    """Kiểm tra giới hạn AI Learning."""
+    return check_feature_limit(user_id, "ai_learning", config.AI_LEARNING_SESSIONS_DAILY)
+
+def check_quiz_limit(user_id: str) -> bool:
+    """Kiểm tra giới hạn tạo Quiz."""
+    return check_feature_limit(user_id, "quiz", config.QUIZ_GENERATION_DAILY)
+
+def check_flashcard_limit(user_id: str) -> bool:
+    """Kiểm tra giới hạn tạo Flashcard."""
+    return check_feature_limit(user_id, "flashcard", config.FLASHCARD_GENERATION_DAILY)
+
+def increment_solve_problem_usage(user_id: str):
+    """Tăng usage cho giải bài tập."""
+    increment_feature_usage(user_id, "solve_problem")
+
+def increment_ai_learning_usage(user_id: str):
+    """Tăng usage cho AI Learning."""
+    increment_feature_usage(user_id, "ai_learning")
+
+def increment_quiz_usage(user_id: str):
+    """Tăng usage cho Quiz."""
+    increment_feature_usage(user_id, "quiz")
+
+def increment_flashcard_usage(user_id: str):
+    """Tăng usage cho Flashcard."""
+    increment_feature_usage(user_id, "flashcard")
 
 
 def increment_usage(user_id: str):
@@ -647,7 +739,8 @@ def get_welcome_message() -> str:
         "• Bảng tính Excel\n"
         "• Bất kỳ giấy tờ nào khó đọc\n\n"
         "⚡ Mình tóm tắt trong 15 giây — rõ ràng, dễ hiểu!\n\n"
-        "🔒 Yên tâm nhé: Ảnh/file của bạn sẽ bị xóa đi ngay lập tức sau khi mình đọc xong, cực kỳ bảo mật nha!\n\n"
+        "📱 Bạn cũng có thể mở Mini App để trải nghiệm Quiz, Flashcard và nhiều tính năng học tập khác!\n\n"
+        "🔒 Yên tâm nhé: File của bạn bị xóa ngay sau khi đọc xong!\n\n"
         "Thử gửi 1 tấm ảnh ngay nhé! 📎"
     )
 
@@ -779,6 +872,13 @@ async def send_summary_with_interactive_buttons(
 ):
     text = format_summary_menu(title, structured_summary, elapsed_seconds)
     buttons = build_summary_buttons(structured_summary)
+    # Thêm nút Mở Mini App nếu còn slot
+    if len(buttons) < ZALO_MAX_BUTTONS:
+        buttons.append({
+            "title": "📱 Mở Mini App",
+            "type": "oa.open.url",
+            "payload": {"url": MINI_APP_URL},
+        })
     await send_long_text_message(user_id, text, buttons)
 
 
@@ -852,6 +952,16 @@ async def send_summary_with_qa_buttons(
             "title": f"💬 {display}",
             "type": "oa.query.show",
             "payload": f"HỎI: {q}",
+        })
+
+    # ── Slot cuối: Mở Mini App (luôn ưu tiên — cầu nối OA → Mini App) ──
+    if len(buttons) < ZALO_MAX_BUTTONS:
+        buttons.append({
+            "title": "📱 Mở Mini App",
+            "type": "oa.open.url",
+            "payload": {
+                "url": MINI_APP_URL,
+            },
         })
 
     await send_long_text_message(user_id, text, buttons)
@@ -1639,7 +1749,11 @@ async def process_webhook_event(body: dict):
 
 
         if event_name == "follow":
-            await send_text_message(sender_id, get_welcome_message())
+            welcome_text = get_welcome_message()
+            welcome_buttons = [
+                {"title": "📱 Mở Mini App", "type": "oa.open.url", "payload": {"url": MINI_APP_URL}},
+            ]
+            await send_long_text_message(sender_id, welcome_text, welcome_buttons)
             return
 
         if event_name == "user_send_text":
@@ -2620,6 +2734,12 @@ async def miniapp_upload_document(request: Request):
         if not user_id:
             return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
 
+        # Check AI Learning daily limit (document upload)
+        if not check_ai_learning_limit(user_id):
+            return JSONResponse(content={
+                "error": f"Bạn đã dùng hết {config.AI_LEARNING_SESSIONS_DAILY} lượt upload tài liệu hôm nay. Quay lại ngày mai nhé!"
+            }, status_code=429)
+
         # Parse multipart form data
         form = await request.form()
         file = form.get("file")
@@ -2697,6 +2817,9 @@ async def miniapp_upload_document(request: Request):
                 flashcards=structured.get("flashcards", []),
                 quiz_questions=structured.get("quiz", [])
             )
+
+            # Increment AI Learning usage after successful upload
+            increment_ai_learning_usage(user_id)
 
             # 💰 CHARGE COINS for file processing (unless first-time free?)
             # Check if user has free quota first
@@ -2894,6 +3017,13 @@ async def miniapp_quiz_start(request: Request):
         user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
         if not doc_id or not user_id:
             return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
+
+        # Check quiz daily limit
+        if not check_quiz_limit(user_id):
+            return JSONResponse(content={
+                "error": f"Bạn đã dùng hết {config.QUIZ_GENERATION_DAILY} lượt tạo Quiz hôm nay. Quay lại ngày mai nhé!"
+            }, status_code=429)
+
         # Check if DB already has questions
         questions = []
         if supabase:
@@ -2921,6 +3051,8 @@ async def miniapp_quiz_start(request: Request):
         session = QuizSession(questions=questions, doc_id=doc_id)
         session.start()
         save_study_session(user_id, doc_id, "quiz", session.to_dict())
+        # Increment usage after successful quiz start
+        increment_quiz_usage(user_id)
         first_q = session.get_current_question()
         return JSONResponse(content={
             "session_id": session.session_id,
@@ -3004,6 +3136,13 @@ async def miniapp_flashcard_start(request: Request):
         user_id = body.get("user_id", "") or request.headers.get("X-User-Id", "")
         if not doc_id or not user_id:
             return JSONResponse(content={"error": "Missing doc_id or user_id"}, status_code=400)
+
+        # Check flashcard daily limit
+        if not check_flashcard_limit(user_id):
+            return JSONResponse(content={
+                "error": f"Bạn đã dùng hết {config.FLASHCARD_GENERATION_DAILY} lượt tạo Flashcard hôm nay. Quay lại ngày mai nhé!"
+            }, status_code=429)
+
         # Check if DB already has flashcards
         flashcards = []
         if supabase:
@@ -3030,6 +3169,8 @@ async def miniapp_flashcard_start(request: Request):
 
         session = FlashcardSession(flashcards=flashcards, doc_id=doc_id)
         save_study_session(user_id, doc_id, "flashcard", session.to_dict())
+        # Increment usage after successful flashcard start
+        increment_flashcard_usage(user_id)
         card = session.get_current_card()
         return JSONResponse(content={
             "session_id": session.session_id,
@@ -3374,6 +3515,12 @@ async def miniapp_solve_problem(
     if not user_id:
         return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
 
+    # Check solve problem daily limit
+    if not check_solve_problem_limit(user_id):
+        return JSONResponse(content={
+            "error": f"Bạn đã dùng hết {config.SOLVE_PROBLEM_DAILY_LIMIT} lượt giải bài tập hôm nay. Quay lại ngày mai nhé!"
+        }, status_code=429)
+
     # Validate file type
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp"]
     if file.content_type not in allowed_types:
@@ -3392,6 +3539,8 @@ async def miniapp_solve_problem(
     try:
         from services.solve_service import solve_problem_image
         result = await solve_problem_image(tmp_path, user_id)
+        # Increment usage after successful solve
+        increment_solve_problem_usage(user_id)
         return JSONResponse(content=result)
     except ValueError as e:
         logger.warning("Solve problem validation error for user %s: %s", user_id, e)
