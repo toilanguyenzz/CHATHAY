@@ -85,7 +85,7 @@ export default function UploadPage() {
   };
 
   const handleUpload = async () => {
-    const uploadFile = pastedImage ? pastedImage.file : file;
+    const uploadFile = pastedImage || file;
     if (!uploadFile) {
       setError('Vui lòng chọn file hoặc paste ảnh trước 📎');
       return;
@@ -146,7 +146,7 @@ export default function UploadPage() {
       className="p-4 space-y-6 fade-in-up pb-safe"
       onPaste={handlePaste}
       tabIndex={0}
-      style={{outline: 'none'}}
+      style={{ outline: 'none' }}
     >
       {/* Header gradient */}
       <div className="text-center pt-2 pb-4">
@@ -184,7 +184,7 @@ export default function UploadPage() {
           onChange={handleFileChange}
           disabled={uploading}
         />
-        <div className="text-8xl mb-4" style={{animation: isDragging ? 'wiggle 0.5s ease-in-out' : 'none'}}>📁</div>
+        <div className="text-8xl mb-4" style={{ animation: isDragging ? 'wiggle 0.5s ease-in-out' : 'none' }}>📁</div>
         <p className="text-2xl font-black text-gray-700 mb-2">
           {isDragging ? '🎯 Thả file vào đây!' : pastedImage ? '🖼️ Ảnh đã paste!' : '📂 Nhấn để chọn file'}
         </p>
@@ -204,7 +204,7 @@ export default function UploadPage() {
             <span className="font-black text-blue-800">🤖 AI đang xử lý...</span>
             <span className="font-black text-blue-600">{progress}%</span>
           </div>
-          <div className="progress-bar h-4" style={{background: '#93c5fd'}}>
+          <div className="progress-bar h-4" style={{ background: '#93c5fd' }}>
             <div className="progress-fill" style={{
               width: `${progress}%`,
               background: 'linear-gradient(90deg, #1cb0f6, #58cc02)',
@@ -223,20 +223,20 @@ export default function UploadPage() {
           background: file.type.includes('pdf')
             ? 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)'
             : file.type.includes('word') || file.name.endsWith('.docx')
-            ? 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)'
-            : 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)',
+              ? 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)'
+              : 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)',
           borderColor: file.type.includes('pdf')
             ? '#ef4444'
             : file.type.includes('word') || file.name.endsWith('.docx')
-            ? '#3b82f6'
-            : '#10b981',
+              ? '#3b82f6'
+              : '#10b981',
           borderWidth: '3px'
         }}>
           <div className="flex items-center gap-4">
             <div className="text-6xl">
               {file.type.includes('pdf') ? '📕' :
-               file.type.includes('word') || file.name.endsWith('.docx') ? '📘' :
-               '🖼️'}
+                file.type.includes('word') || file.name.endsWith('.docx') ? '📘' :
+                  '🖼️'}
             </div>
             <div className="flex-1">
               <div className="font-black text-lg truncate text-gray-800">{file.name}</div>

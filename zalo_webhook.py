@@ -2726,6 +2726,131 @@ async def miniapp_get_document(request: Request, doc_id: str):
         return JSONResponse(content={"error": "Internal error"}, status_code=500)
 
 
+@app.post("/api/miniapp/fast-upload")
+async def miniapp_fast_upload(request: Request):
+    """Fast upload: extract text only, skip AI summarization.
+    
+    Returns doc_id immediately (~2-5s) so frontend can navigate to Quiz/Flashcard.
+    Quiz and Flashcard content are generated lazily when user opens them.
+    """
+    try:
+        user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
+        if not user_id:
+            return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+        # Check AI Learning daily limit
+        if not check_ai_learning_limit(user_id):
+            return JSONResponse(content={
+                "error": f"Bạn đã dùng hết {config.AI_LEARNING_SESSIONS_DAILY} lượt upload tài liệu hôm nay. Quay lại ngày mai nhé!"
+            }, status_code=429)
+
+        # Parse multipart form data
+        form = await request.form()
+        file = form.get("file")
+        mode = form.get("mode", "quiz")  # quiz | flashcard | both
+        if not file:
+            return JSONResponse(content={"error": "Missing file"}, status_code=400)
+
+        filename = file.filename or "document"
+        file_type = get_file_type(filename)
+
+        if file_type == "unknown":
+            return JSONResponse(content={"error": "Chỉ hỗ trợ PDF, Word (.docx), hoặc ảnh."}, status_code=400)
+
+        # Read file content
+        content = await file.read()
+
+        if len(content) > config.MAX_FILE_SIZE_MB * 1024 * 1024:
+            return JSONResponse(content={"error": f"File quá lớn! Tối đa {config.MAX_FILE_SIZE_MB}MB."}, status_code=400)
+
+        # Save temp file
+        temp_filename = f"{uuid.uuid4().hex}_{filename}"
+        file_path = os.path.join(config.TEMP_DIR, temp_filename)
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            # FAST PATH: Only extract text, NO AI summarization
+            doc_text = ""
+            if file_type == "image":
+                # For images, we need OCR via Gemini (still fast, single call)
+                doc_text = await extract_ocr_text(file_path)
+                if not doc_text:
+                    doc_text = "[Ảnh không có văn bản - sẽ dùng AI vision]"
+            else:
+                text, _ft = await extract_text(file_path, config.MAX_PAGES)
+                if not text and _ft == "pdf":
+                    # OCR fallback for scanned PDF
+                    page_images = await convert_pdf_to_images(file_path, max_pages=5)
+                    if page_images:
+                        try:
+                            ocr_parts = []
+                            for img_path in page_images[:3]:  # Limit to 3 pages for speed
+                                ocr_text = await extract_ocr_text(img_path)
+                                if ocr_text:
+                                    ocr_parts.append(ocr_text)
+                            doc_text = "\n\n".join(ocr_parts)
+                        finally:
+                            for img_path in page_images:
+                                try:
+                                    os.remove(img_path)
+                                except OSError:
+                                    pass
+                    if not doc_text:
+                        return JSONResponse(content={"error": "Không thể đọc file PDF này."}, status_code=400)
+                elif not text:
+                    return JSONResponse(content={"error": "Không đọc được nội dung file này."}, status_code=400)
+                else:
+                    doc_text = text
+
+            # Generate doc_id
+            doc_id = str(uuid.uuid4())
+
+            # Save document to DB with minimal data (no summary, no flashcards, no quiz)
+            save_document(
+                user_id=user_id,
+                doc_id=doc_id,
+                name=filename,
+                text=doc_text or "[File không có text content]",
+                summary="[Đang xử lý...]",  # Placeholder
+                doc_type=file_type,
+                flashcards=[],
+                quiz_questions=[]
+            )
+
+            # Save text for Q&A and lazy generation
+            if doc_text:
+                save_document_text_temp(user_id, doc_id, doc_text)
+
+            # Increment usage
+            increment_ai_learning_usage(user_id)
+
+            logger.info("✅ Fast upload success: user=%s, doc=%s, type=%s, text_len=%s",
+                        user_id[:8], doc_id[:8], file_type, len(doc_text))
+
+            return JSONResponse(content={
+                "id": doc_id,
+                "name": filename,
+                "doc_type": file_type,
+                "timestamp": time.time(),
+                "text_length": len(doc_text),
+                "mode": mode,
+                "status": "ready",
+            }, status_code=201)
+
+        finally:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+
+    except Exception as exc:
+        logger.error("Miniapp fast upload error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": "Internal error"}, status_code=500)
+
+
 @app.post("/api/miniapp/documents")
 async def miniapp_upload_document(request: Request):
     """Upload and process a document for Mini App."""
@@ -2958,25 +3083,43 @@ async def miniapp_chat_ask(request: Request):
 
 @app.get("/api/miniapp/documents/{doc_id}/flashcards")
 async def miniapp_get_flashcards(doc_id: str, request: Request):
-    """Get flashcards for a document."""
+    """Get flashcards for a document. Auto-generates if missing (lazy)."""
     try:
         user_id = request.headers.get("X-User-Id") or request.query_params.get("user_id", "")
         if not user_id:
             return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
 
         # Query flashcards from documents table
+        flashcards = []
         if supabase:
             result = supabase.table("documents").select("flashcards").eq("id", doc_id).eq("user_id", user_id).execute()
-            if not result.data:
-                return JSONResponse(content=[], status_code=200)
-            flashcards = result.data[0].get("flashcards") or []
-            return JSONResponse(content=flashcards)
+            if result.data and result.data[0].get("flashcards"):
+                flashcards = result.data[0]["flashcards"]
 
         # Memory fallback
-        if user_id in _memory_documents and doc_id in _memory_documents[user_id]:
-            return JSONResponse(content=_memory_documents[user_id][doc_id].get("flashcards") or [])
+        if not flashcards and user_id in _memory_documents and doc_id in _memory_documents[user_id]:
+            flashcards = _memory_documents[user_id][doc_id].get("flashcards") or []
 
-        return JSONResponse(content=[], status_code=200)
+        # Auto-generate if empty (lazy generation from fast-upload)
+        if not flashcards:
+            doc_text = get_document_text_temp(user_id, doc_id)
+            if doc_text and len(doc_text) > 50:
+                try:
+                    from prompts.study_prompts import GENERATE_FLASHCARD_PROMPT
+                    prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
+                    flash_json_str = await _call_with_smart_routing(
+                        prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+                    )
+                    flash_data = json.loads(flash_json_str)
+                    flashcards = flash_data.get("flashcards", [])
+                    # Cache in DB for next time
+                    if flashcards and supabase:
+                        supabase.table("documents").update({"flashcards": flashcards}).eq("id", doc_id).eq("user_id", user_id).execute()
+                    logger.info("✅ Flashcards lazy-generated for doc %s: %s cards", doc_id[:8], len(flashcards))
+                except Exception as gen_err:
+                    logger.warning("Flashcard lazy generation failed: %s", gen_err)
+
+        return JSONResponse(content=flashcards, status_code=200)
     except Exception as exc:
         logger.error("Miniapp get flashcards error: %s", exc, exc_info=True)
         return JSONResponse(content={"error": "Internal error"}, status_code=500)

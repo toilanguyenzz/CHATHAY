@@ -1,10 +1,11 @@
 """Prompts for Study Mode — Quiz, Flashcard, Summary"""
 
 GENERATE_QUIZ_PROMPT = """
-Từ đề thi/bài giảng sau, tạo 10 câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D).
+Từ đề thi/bài giảng sau, tạo câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D).
 
 Yêu cầu:
-1. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất, phân bổ đều các chương/mục
+1. **Số lượng:** Tạo TẤT CẢ câu hỏi có thể từ tài liệu (tối thiểu 10 câu, tối đa 25 câu). Nếu tài liệu dài, tạo nhiều câu hơn.
+2. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất, phân bổ đều các chương/mục
 2. **Độ khó:** 60% dễ (kiến thức cơ bản), 30% trung bình (ứng dụng), 10% khó (tổng hợp)
 3. **Cấu trúc câu hỏi:**
    - Rõ ràng, không ambiguous
