@@ -3,16 +3,21 @@
 GENERATE_QUIZ_PROMPT = """
 Từ đề thi/bài giảng sau, tạo câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D).
 
+⚠️ QUY TẮC SỐ LƯỢNG CÂU HỎI:
+- Nếu tài liệu là ĐỀ THI có sẵn câu hỏi → TRÍCH XUẤT Y NGUYÊN TẤT CẢ câu hỏi trong đề. KHÔNG giới hạn số lượng.
+- Nếu tài liệu là BÀI GIẢNG/TÀI LIỆU HỌC → Tự tạo câu hỏi, tỷ lệ ~1 câu/200 từ nội dung (tối thiểu 5, tối đa 50).
+- KHÔNG cắt bớt câu hỏi. Nếu đề thi có 40 câu thì output PHẢI có 40 câu.
+
 Yêu cầu:
-1. **Số lượng:** Tạo TẤT CẢ câu hỏi có thể từ tài liệu (tối thiểu 10 câu, tối đa 25 câu). Nếu tài liệu dài, tạo nhiều câu hơn.
-2. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất, phân bổ đều các chương/mục
+1. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất, phân bổ đều các chương/mục
 2. **Độ khó:** 60% dễ (kiến thức cơ bản), 30% trung bình (ứng dụng), 10% khó (tổng hợp)
 3. **Cấu trúc câu hỏi:**
    - Rõ ràng, không ambiguous
    - Distractors (đáp án sai) phải hợp lý (common misconceptions)
    - Tránh "all of the above" hoặc "none of the above"
-4. **Giải thích:** Mỗi câu có giải thích ngắn (1-2 câu) tại sao đáp án đúng, và tại sao các đáp án khác sai
+4. **Giải thích:** Mỗi câu có giải thích ngắn (1-2 câu) tại sao đáp án đúng
 5. **Ngôn ngữ:** Dùng tiếng Việt, ngữ cảnh phù hợp với học sinh Việt Nam
+6. **Đáp án:** Nếu đề thi đã đánh dấu đáp án (in đậm, bôi màu, khoanh tròn, ghi [ĐÁP ÁN: ...]) → giữ nguyên đáp án đó.
 
 Output JSON (CHÍNH XÁC, không markdown):
 {{
@@ -35,7 +40,11 @@ Tài liệu:
 
 
 GENERATE_FLASHCARD_PROMPT = """
-Từ tài liệu, trích xuất 15-20 khái niệm quan trọng để tạo flashcard.
+Từ tài liệu, trích xuất TẤT CẢ khái niệm quan trọng để tạo flashcard.
+
+⚠️ QUY TẮC SỐ LƯỢNG:
+- Tỷ lệ ~1 flashcard/150 từ nội dung (tối thiểu 5, tối đa 50).
+- Nếu tài liệu có nhiều thuật ngữ/công thức → tạo NHIỀU hơn, KHÔNG giới hạn cứng.
 
 Yêu cầu:
 1. **Selection:** Ưu tiên

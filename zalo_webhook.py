@@ -3106,9 +3106,9 @@ async def miniapp_get_flashcards(doc_id: str, request: Request):
             if doc_text and len(doc_text) > 50:
                 try:
                     from prompts.study_prompts import GENERATE_FLASHCARD_PROMPT
-                    prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:8000])
+                    prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:15000])
                     flash_json_str = await _call_with_smart_routing(
-                        prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+                        prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
                     )
                     flash_data = json.loads(flash_json_str)
                     flashcards = flash_data.get("flashcards", [])
@@ -3179,9 +3179,9 @@ async def miniapp_quiz_start(request: Request):
             doc_text = get_document_text_temp(user_id, doc_id)
             if not doc_text:
                 return JSONResponse(content={"error": "Document not found or expired"}, status_code=404)
-            prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:8000])
+            prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:15000])
             quiz_json_str = await _call_with_smart_routing(
-                prompt, text_length=len(doc_text), max_tokens=8192, response_json=True
+                prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
             )
             quiz_data = json.loads(quiz_json_str)
             questions = quiz_data.get("questions", [])
