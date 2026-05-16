@@ -146,14 +146,15 @@ async def get_shared_quiz(share_code: str, request: Request):
 async def start_shared_quiz(share_code: str, request: Request):
     """
     Student starts a shared quiz session.
-    Requires authentication.
+    No login required - student provides name/phone.
     """
     try:
         body = await request.json()
-        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
+        student_name = body.get("student_name", "")
+        student_phone = body.get("student_phone", "")
 
-        if not user_id:
-            return JSONResponse(content={"error": "Authentication required"}, status_code=401)
+        if not student_name or not student_phone:
+            return JSONResponse(content={"error": "Cần nhập họ tên và số điện thoại"}, status_code=400)
 
         supabase = get_supabase_client()
         if not supabase:
@@ -163,15 +164,15 @@ async def start_shared_quiz(share_code: str, request: Request):
         quiz_result = supabase.table("shared_quizzes").select("*").eq("share_code", share_code).eq("is_active", True).single().execute()
 
         if not quiz_result.data:
-            return JSONResponse(content={"error": "Quiz not found or inactive"}, status_code=404)
+            return JSONResponse(content={"error": "Quiz không tồn tại"}, status_code=404)
 
         quiz = quiz_result.data
 
-        # Check if user has already completed (if max_attempts > 0)
+        # Check attempts by phone number (student identity)
         if quiz.get("max_attempts", 1) > 0:
-            attempts = supabase.table("quiz_attempts").select("*").eq("quiz_id", quiz["id"]).eq("user_id", user_id).execute()
+            attempts = supabase.table("quiz_attempts").select("*").eq("quiz_id", quiz["id"]).eq("student_phone", student_phone).execute()
             if len(attempts.data) >= quiz["max_attempts"]:
-                return JSONResponse(content={"error": "Maximum attempts reached"}, status_code=403)
+                return JSONResponse(content={"error": "Bạn đã làm quiz này rồi"}, status_code=403)
 
         # Return questions (for student to take quiz)
         return JSONResponse(content={

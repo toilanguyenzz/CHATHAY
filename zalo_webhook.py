@@ -3895,6 +3895,266 @@ if shared_quiz_router:
 #     return JSONResponse(content={"answer": "RAG chưa sẵn sàng", "sources": []}, status_code=503)
 
 
+# ═══════════════════════════════════════════════════
+# ADMIN — Bulk Upload & Public Exam Library
+# ═══════════════════════════════════════════════════
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "chathay2024admin")
+ADMIN_USER_ID = "admin_chathay_public"
+
+
+@app.get("/api/admin/exams")
+async def admin_page(key: str = ""):
+    """Admin page for bulk uploading exams."""
+    if key != ADMIN_SECRET:
+        return HTMLResponse("<h1>403 Forbidden</h1>", status_code=403)
+
+    html = """<!DOCTYPE html>
+<html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Admin Upload | Chat Hay</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0F172A;color:#E2E8F0;min-height:100vh}
+.c{max-width:800px;margin:0 auto;padding:24px}
+h1{font-size:28px;font-weight:900;margin-bottom:8px;background:linear-gradient(135deg,#8B5CF6,#06B6D4);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sub{color:#94A3B8;font-size:14px;margin-bottom:24px}
+.fg{margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:700;color:#94A3B8;margin-bottom:6px}
+select,input[type=text]{width:100%;padding:12px 16px;border:1.5px solid #334155;border-radius:12px;background:#1E293B;color:#E2E8F0;font-size:15px;outline:none}
+.fz{border:2px dashed #334155;border-radius:16px;padding:32px;text-align:center;cursor:pointer;background:#1E293B}
+.fz:hover{border-color:#8B5CF6;background:#1E1B4B}
+.fz.ok{border-color:#10B981;background:#064E3B}
+.fl{margin-top:12px;font-size:13px;color:#94A3B8;max-height:200px;overflow-y:auto}
+.fi{padding:8px 12px;background:#1E293B;border-radius:8px;margin-bottom:4px}
+.btn{padding:14px 28px;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;width:100%;margin-top:16px;background:linear-gradient(135deg,#8B5CF6,#7C3AED);color:white}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.pg{margin-top:16px;padding:16px;border-radius:12px;background:#1E293B;border:1px solid #334155}
+.pb{height:6px;border-radius:3px;background:#334155;overflow:hidden;margin-top:8px}
+.pf{height:100%;border-radius:3px;background:linear-gradient(90deg,#8B5CF6,#06B6D4);transition:width .3s}
+.log{margin-top:8px;font-size:12px;max-height:150px;overflow-y:auto}
+.log .s{color:#10B981;padding:4px 0}.log .e{color:#EF4444;padding:4px 0}
+.st{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px}
+.st>div{padding:16px;border-radius:12px;background:#1E293B;border:1px solid #334155;text-align:center}
+.sn{font-size:28px;font-weight:900;color:#8B5CF6}.sl{font-size:12px;color:#64748B;margin-top:4px}
+</style></head><body><div class="c">
+<h1>Admin Upload De Thi</h1><p class="sub">Upload hang loat de thi cho Kho De Thi cong khai</p>
+<div class="st" id="stats"><div><div class="sn" id="te">--</div><div class="sl">Tong de</div></div>
+<div><div class="sn" id="tq">--</div><div class="sl">Co Quiz</div></div>
+<div><div class="sn" id="tf">--</div><div class="sl">Co Flashcard</div></div></div>
+<div class="fg"><label>Mon hoc</label><select id="subj">
+<option value="toan">Toan</option><option value="ly">Ly</option><option value="hoa">Hoa</option>
+<option value="sinh">Sinh</option><option value="su">Lich Su</option><option value="dia">Dia Ly</option>
+<option value="anh" selected>Tieng Anh</option><option value="van">Ngu Van</option>
+<option value="gdcd">GDCD</option><option value="tin">Tin Hoc</option><option value="khac">Khac</option>
+</select></div>
+<div class="fg"><label>Lop</label><select id="grade">
+<option value="">-- Khong chon --</option><option value="10">Lop 10</option>
+<option value="11">Lop 11</option><option value="12" selected>Lop 12</option>
+<option value="9">Lop 9</option><option value="dh">Dai Hoc</option></select></div>
+<div class="fz" id="dz" onclick="document.getElementById('fi').click()">
+<div style="font-size:48px;margin-bottom:12px">📁</div>
+<div style="font-size:16px;font-weight:700">Keo tha hoac bam chon file</div>
+<div style="font-size:13px;color:#64748B;margin-top:8px">PDF, Word, Anh — Chon nhieu file</div>
+<input type="file" id="fi" multiple accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp" style="display:none" onchange="hf(this.files)">
+</div><div class="fl" id="fl"></div>
+<button class="btn" id="ub" onclick="go()" disabled>Upload & Tao Quiz</button>
+<div class="pg" id="pa" style="display:none">
+<div style="display:flex;justify-content:space-between;font-size:13px"><span id="pt">...</span><span id="pp">0%</span></div>
+<div class="pb"><div class="pf" id="pf" style="width:0%"></div></div>
+<div class="log" id="lg"></div></div></div>
+<script>
+const K='""" + ADMIN_SECRET + """';let F=[];
+fetch('/api/miniapp/public-exams').then(r=>r.json()).then(d=>{
+let a=Array.isArray(d)?d:[];document.getElementById('te').textContent=a.length;
+document.getElementById('tq').textContent=a.filter(e=>e.has_quiz).length;
+document.getElementById('tf').textContent=a.filter(e=>e.has_flashcards).length}).catch(()=>{});
+function hf(f){F=Array.from(f);document.getElementById('fl').innerHTML=F.map((x,i)=>
+'<div class="fi">'++(i+1)+'. '+x.name+' ('+(x.size/1024/1024).toFixed(1)+'MB)</div>').join('');
+document.getElementById('ub').disabled=!F.length;document.getElementById('dz').classList.toggle('ok',F.length>0)}
+let dz=document.getElementById('dz');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('ok')});
+dz.addEventListener('dragleave',()=>dz.classList.remove('ok'));
+dz.addEventListener('drop',e=>{e.preventDefault();hf(e.dataTransfer.files)});
+async function go(){
+let s=document.getElementById('subj').value,g=document.getElementById('grade').value;
+document.getElementById('ub').disabled=true;
+let pa=document.getElementById('pa');pa.style.display='block';
+let lg=document.getElementById('lg');lg.innerHTML='';
+let d=0,t=F.length;
+for(let f of F){try{let fd=new FormData();fd.append('file',f);fd.append('subject',s);fd.append('grade',g);
+let r=await fetch('/api/admin/bulk-upload?key='+K,{method:'POST',body:fd});let j=await r.json();d++;
+let p=Math.round(d/t*100);document.getElementById('pf').style.width=p+'%';
+document.getElementById('pp').textContent=p+'%';document.getElementById('pt').textContent=d+'/'+t;
+if(r.ok)lg.innerHTML+='<div class="s">OK '+f.name+' -> '+j.quiz_count+' quiz, '+j.flashcard_count+' flash</div>';
+else lg.innerHTML+='<div class="e">ERR '+f.name+': '+j.error+'</div>'}
+catch(e){d++;lg.innerHTML+='<div class="e">ERR '+f.name+': '+e.message+'</div>'}lg.scrollTop=lg.scrollHeight}
+document.getElementById('pt').textContent='Done!';document.getElementById('ub').disabled=false;
+setTimeout(()=>location.reload(),2000)}
+</script></body></html>"""
+    return HTMLResponse(html)
+
+
+@app.post("/api/admin/bulk-upload")
+async def admin_bulk_upload(request: Request, key: str = ""):
+    """Admin: upload 1 file, extract text, generate quiz + flashcard, save as public."""
+    if key != ADMIN_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
+
+    try:
+        form = await request.form()
+        file = form.get("file")
+        subject = form.get("subject", "khac")
+        grade = form.get("grade", "")
+
+        if not file:
+            return JSONResponse(content={"error": "No file"}, status_code=400)
+
+        filename = file.filename or "exam"
+        file_type = get_file_type(filename)
+        if file_type == "unknown":
+            return JSONResponse(content={"error": "Unsupported file type"}, status_code=400)
+
+        content = await file.read()
+        if len(content) > 20 * 1024 * 1024:
+            return JSONResponse(content={"error": "File too large (max 20MB)"}, status_code=400)
+
+        temp_filename = f"{uuid.uuid4().hex}_{filename}"
+        file_path = os.path.join(config.TEMP_DIR, temp_filename)
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            # Extract text
+            doc_text = ""
+            if file_type == "image":
+                doc_text = await extract_ocr_text(file_path) or ""
+            else:
+                text, _ft = await extract_text(file_path, config.MAX_PAGES)
+                if not text and _ft == "pdf":
+                    page_images = await convert_pdf_to_images(file_path, max_pages=10)
+                    if page_images:
+                        try:
+                            parts = []
+                            for img_path in page_images[:5]:
+                                ocr = await extract_ocr_text(img_path)
+                                if ocr:
+                                    parts.append(ocr)
+                            doc_text = "\n\n".join(parts)
+                        finally:
+                            for p in page_images:
+                                try:
+                                    os.remove(p)
+                                except OSError:
+                                    pass
+                else:
+                    doc_text = text or ""
+
+            if not doc_text or len(doc_text) < 50:
+                return JSONResponse(content={"error": "Cannot extract text"}, status_code=400)
+
+            from prompts.study_prompts import GENERATE_QUIZ_PROMPT, GENERATE_FLASHCARD_PROMPT
+
+            quiz_questions = []
+            flashcards = []
+
+            # Generate Quiz
+            try:
+                quiz_prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:15000])
+                quiz_json_str = await _call_with_smart_routing(
+                    quiz_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
+                )
+                quiz_data = json.loads(quiz_json_str)
+                quiz_questions = quiz_data.get("questions", [])
+            except Exception as qe:
+                logger.warning("Admin quiz gen failed: %s", qe)
+
+            # Generate Flashcards
+            try:
+                flash_prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:15000])
+                flash_json_str = await _call_with_smart_routing(
+                    flash_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
+                )
+                flash_data = json.loads(flash_json_str)
+                flashcards = flash_data.get("flashcards", [])
+            except Exception as fe:
+                logger.warning("Admin flashcard gen failed: %s", fe)
+
+            # Build display name
+            subject_labels = {
+                "toan": "Toán", "ly": "Lý", "hoa": "Hóa", "sinh": "Sinh",
+                "su": "Lịch Sử", "dia": "Địa Lý", "anh": "Tiếng Anh",
+                "van": "Ngữ Văn", "gdcd": "GDCD", "tin": "Tin Học", "khac": "Khác"
+            }
+            prefix = subject_labels.get(subject, subject)
+            grade_str = f" Lớp {grade}" if grade else ""
+            display_name = f"[{prefix}{grade_str}] {filename}"
+
+            doc_id = str(uuid.uuid4())
+            save_document(
+                user_id=ADMIN_USER_ID,
+                doc_id=doc_id,
+                name=display_name,
+                text=doc_text,
+                summary=f"Đề thi {prefix}",
+                doc_type=file_type,
+                flashcards=flashcards,
+                quiz_questions=quiz_questions
+            )
+
+            save_document_text_temp(ADMIN_USER_ID, doc_id, doc_text)
+
+            logger.info("✅ Admin upload: %s → %s quiz, %s flash", filename, len(quiz_questions), len(flashcards))
+
+            return JSONResponse(content={
+                "id": doc_id,
+                "name": display_name,
+                "quiz_count": len(quiz_questions),
+                "flashcard_count": len(flashcards),
+            }, status_code=201)
+
+        finally:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+
+    except Exception as exc:
+        logger.error("Admin bulk upload error: %s", exc, exc_info=True)
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/miniapp/public-exams")
+async def get_public_exams():
+    """Get all public exam documents for the exam library."""
+    try:
+        if supabase:
+            result = supabase.table("documents").select(
+                "id, name, doc_type, created_at, quiz_questions, flashcards"
+            ).eq("user_id", ADMIN_USER_ID).order("created_at", desc=True).execute()
+
+            exams = []
+            for doc in (result.data or []):
+                quiz_qs = doc.get("quiz_questions") or []
+                flash = doc.get("flashcards") or []
+                exams.append({
+                    "id": doc["id"],
+                    "name": doc.get("name", "Đề thi"),
+                    "doc_type": doc.get("doc_type", "pdf"),
+                    "created_at": doc.get("created_at"),
+                    "quiz_count": len(quiz_qs),
+                    "flashcard_count": len(flash),
+                    "has_quiz": len(quiz_qs) > 0,
+                    "has_flashcards": len(flash) > 0,
+                })
+            return JSONResponse(content=exams)
+
+        return JSONResponse(content=[])
+    except Exception as exc:
+        logger.error("Get public exams error: %s", exc, exc_info=True)
+        return JSONResponse(content=[], status_code=200)
+
+
 if __name__ == "__main__":
     try:
         logger.info("🚀 Starting server on %s:%s", config.HOST, config.PORT)
