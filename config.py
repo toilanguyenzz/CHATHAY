@@ -40,6 +40,12 @@ class Config:
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
     MAX_PAGES: int = int(os.getenv("MAX_PAGES", "20"))
 
+    # Beta Test Limits (Feature-specific for 1-month test with 200 students)
+    SOLVE_PROBLEM_DAILY_LIMIT: int = int(os.getenv("SOLVE_PROBLEM_DAILY_LIMIT", "10"))  # Test heavily
+    AI_LEARNING_SESSIONS_DAILY: int = int(os.getenv("AI_LEARNING_SESSIONS_DAILY", "5"))  # Restrict to control cost
+    QUIZ_GENERATION_DAILY: int = int(os.getenv("QUIZ_GENERATION_DAILY", "10"))
+    FLASHCARD_GENERATION_DAILY: int = int(os.getenv("FLASHCARD_GENERATION_DAILY", "10"))
+
     # Paths
     TEMP_DIR: str = os.path.join(os.path.dirname(__file__), "temp")
     AUDIO_DIR: str = os.path.join(os.path.dirname(__file__), "temp", "audio")

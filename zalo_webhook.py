@@ -3553,6 +3553,97 @@ async def miniapp_solve_problem(
             os.unlink(tmp_path)
 
 
+@app.post("/api/miniapp/solve-text")
+async def miniapp_solve_text(request: Request):
+    """
+    Solve a problem from text question (no image) → AI step-by-step solution.
+
+    Request JSON:
+    {
+      "question": "Giải phương trình x² - 5x + 6 = 0"
+    }
+
+    Returns JSON:
+    {
+      "question": "tóm tắt đề bài",
+      "steps": ["bước 1", "bước 2", ...],
+      "answer": "đáp án cuối cùng"
+    }
+    """
+    user_id = request.headers.get("X-User-Id")
+    if not user_id:
+        return JSONResponse(content={"error": "Missing user_id"}, status_code=400)
+
+    # Check solve problem daily limit
+    if not check_solve_problem_limit(user_id):
+        return JSONResponse(content={
+            "error": f"Bạn đã dùng hết {config.SOLVE_PROBLEM_DAILY_LIMIT} lượt giải bài tập hôm nay. Quay lại ngày mai nhé!"
+        }, status_code=429)
+
+    try:
+        body = await request.json()
+        question = body.get("question", "").strip()
+        if not question:
+            return JSONResponse(content={"error": "Missing question"}, status_code=400)
+
+        if len(question) > 5000:
+            return JSONResponse(content={"error": "Câu hỏi quá dài (tối đa 5000 ký tự)"}, status_code=400)
+
+        logger.info("Solve text: user=%s, question=%s", user_id[:8], question[:80])
+
+        # Use SOLVE_PROBLEM_PROMPT with the text question
+        from prompts.study_prompts import SOLVE_PROBLEM_PROMPT
+        prompt = SOLVE_PROBLEM_PROMPT.format(question=question)
+
+        from services.ai_summarizer import _call_deepseek
+        solution_text = await _call_deepseek(
+            prompt=prompt,
+            system_prompt="Bạn là giáo viên giỏi. Giải bài tập/trả lời câu hỏi từng bước rõ ràng bằng tiếng Việt.",
+            max_tokens=2000,
+            response_json=True,
+        )
+
+        solution = json.loads(solution_text)
+
+        # Validate
+        required_keys = ["question", "steps", "answer"]
+        if not all(k in solution for k in required_keys):
+            raise ValueError("Missing keys in solution")
+
+        if not isinstance(solution["steps"], list):
+            solution["steps"] = [str(solution["steps"])]
+
+        if len(solution["steps"]) > 20:
+            solution["steps"] = solution["steps"][:20]
+
+        # Increment usage
+        increment_solve_problem_usage(user_id)
+
+        # Save to database
+        from services.db_service import save_solved_problem
+        save_solved_problem(
+            user_id=user_id,
+            question=solution["question"],
+            steps=solution["steps"],
+            answer=solution["answer"],
+            subject=None,
+            difficulty=None,
+            image_url=None,
+        )
+
+        logger.info("✅ Solve text completed for user %s: %d steps", user_id[:8], len(solution["steps"]))
+        return JSONResponse(content=solution)
+
+    except json.JSONDecodeError:
+        return JSONResponse(content={"error": "Invalid request or AI response"}, status_code=400)
+    except ValueError as e:
+        logger.warning("Solve text validation error for user %s: %s", user_id, e)
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.error("Solve text error for user %s: %s", user_id, e, exc_info=True)
+        return JSONResponse(content={"error": "Không thể giải bài. Vui lòng thử lại."}, status_code=500)
+
+
 @app.post("/api/miniapp/generate-quiz-from-solution")
 async def generate_quiz_from_solution(request: Request):
     """

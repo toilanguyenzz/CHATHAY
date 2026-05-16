@@ -11,7 +11,33 @@ export default function UploadPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [pastedImage, setPastedImage] = useState(null);
   const fileInputRef = useRef(null);
+
+  // Handle paste event
+  const handlePaste = (e) => {
+    const items = e.clipboardData.items;
+    for (let item of items) {
+      if (item.type.indexOf('image') !== -1) {
+        const file = item.getAsFile();
+        // Check file size (max 20MB)
+        if (file.size > 20 * 1024 * 1024) {
+          setError('Ảnh quá lớn! Tối đa 20MB 📦');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setPastedImage({
+            file,
+            preview: event.target.result
+          });
+          setError('');
+        };
+        reader.readAsDataURL(file);
+        break;
+      }
+    }
+  };
 
   const handleFileChange = (e) => {
     const selected = e.target.files[0];
@@ -59,8 +85,9 @@ export default function UploadPage() {
   };
 
   const handleUpload = async () => {
-    if (!file) {
-      setError('Vui lòng chọn file trước 📎');
+    const uploadFile = pastedImage ? pastedImage.file : file;
+    if (!uploadFile) {
+      setError('Vui lòng chọn file hoặc paste ảnh trước 📎');
       return;
     }
 
@@ -82,7 +109,7 @@ export default function UploadPage() {
       const user = JSON.parse(userStr);
 
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', uploadFile);
 
       const response = await fetch(`${API_BASE_URL}/api/miniapp/documents`, {
         method: 'POST',
@@ -115,7 +142,12 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="p-4 space-y-6 fade-in-up pb-safe">
+    <div
+      className="p-4 space-y-6 fade-in-up pb-safe"
+      onPaste={handlePaste}
+      tabIndex={0}
+      style={{outline: 'none'}}
+    >
       {/* Header gradient */}
       <div className="text-center pt-2 pb-4">
         <h1 className="text-4xl font-black mb-2 bounce-in" style={{
@@ -154,9 +186,11 @@ export default function UploadPage() {
         />
         <div className="text-8xl mb-4" style={{animation: isDragging ? 'wiggle 0.5s ease-in-out' : 'none'}}>📁</div>
         <p className="text-2xl font-black text-gray-700 mb-2">
-          {isDragging ? '🎯 Thả file vào đây!' : '📂 Nhấn để chọn file'}
+          {isDragging ? '🎯 Thả file vào đây!' : pastedImage ? '🖼️ Ảnh đã paste!' : '📂 Nhấn để chọn file'}
         </p>
-        <p className="text-sm text-gray-500 font-bold">hoặc kéo thả file vào đây</p>
+        <p className="text-sm text-gray-500 font-bold">
+          {pastedImage ? 'Bấm Upload để xử lý ảnh' : 'hoặc kéo thả file vào đây • Ctrl+V để paste ảnh'}
+        </p>
       </div>
 
       {/* Progress Bar - gradient xanh */}
@@ -184,7 +218,7 @@ export default function UploadPage() {
       )}
 
       {/* File Preview - gradient theo loại file */}
-      {file && !uploading && (
+      {file && !uploading && !pastedImage && (
         <div className="card lift-on-hover bounce-in" style={{
           background: file.type.includes('pdf')
             ? 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)'
@@ -217,6 +251,48 @@ export default function UploadPage() {
               onClick={(e) => {
                 e.stopPropagation();
                 setFile(null);
+                setPastedImage(null);
+              }}
+              className="w-12 h-12 bg-red-100 text-red-500 rounded-xl hover:bg-red-200 transition-colors flex items-center justify-center text-2xl font-black"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Pasted Image Preview */}
+      {pastedImage && !uploading && (
+        <div className="card lift-on-hover bounce-in" style={{
+          background: 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)',
+          borderColor: '#10b981',
+          borderWidth: '3px'
+        }}>
+          <div className="flex items-center gap-4">
+            <img
+              src={pastedImage.preview}
+              alt="Pasted image"
+              style={{
+                width: '80px',
+                height: '80px',
+                objectFit: 'cover',
+                borderRadius: '12px',
+                border: '3px solid #10b981'
+              }}
+            />
+            <div className="flex-1">
+              <div className="font-black text-lg text-gray-800">Ảnh từ clipboard 📋</div>
+              <div className="text-sm text-gray-600 font-bold mt-1">
+                {(pastedImage.file.size / 1024 / 1024).toFixed(2)} MB • Ready!
+              </div>
+              <div className="mt-2">
+                <span className="badge badge-education text-sm">✓ Sẵn sàng</span>
+              </div>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setPastedImage(null);
               }}
               className="w-12 h-12 bg-red-100 text-red-500 rounded-xl hover:bg-red-200 transition-colors flex items-center justify-center text-2xl font-black"
             >
@@ -255,7 +331,7 @@ export default function UploadPage() {
       {/* Upload Button - gradient xanh lá */}
       <button
         onClick={handleUpload}
-        disabled={!file || uploading}
+        disabled={!file && !pastedImage || uploading}
         className="btn text-lg py-5 bounce-in disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
           background: 'linear-gradient(135deg, #58cc02 0%, #46a703 100%)',

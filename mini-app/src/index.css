@@ -341,3 +341,26 @@ html, body, #root {
 
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
 .pt-safe { padding-top: env(safe-area-inset-top); }
+
+/* Paste image preview area */
+.paste-area {
+  border: 4px dashed #1cb0f6;
+  border-radius: 1.5rem;
+  padding: 2rem;
+  background: linear-gradient(135deg, #e8f7ff 0%, #dbeafe 100%);
+  text-align: center;
+  transition: all 200ms;
+  cursor: pointer;
+}
+
+.paste-area:hover {
+  border-color: #58cc02;
+  background: linear-gradient(135deg, #e8f9e8 0%, #d1fae5 100%);
+}
+
+.paste-hint {
+  font-size: 0.875rem;
+  color: #64748b;
+  font-weight: 700;
+  margin-top: 0.5rem;
+}

@@ -748,6 +748,8 @@ def save_solved_problem(
     norm_user_id = int(user_id) if str(user_id).isdigit() else user_id
     problem_id = f"prob_{int(time.time())}_{hash(question) % 10000}"
     timestamp = time.time()
+    from datetime import datetime, timezone
+    created_at_iso = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
     problem_data = {
         "id": problem_id,
@@ -758,7 +760,7 @@ def save_solved_problem(
         "subject": subject,
         "difficulty": difficulty,
         "image_url": image_url,
-        "created_at": timestamp,
+        "created_at": created_at_iso,
     }
 
     if supabase:
