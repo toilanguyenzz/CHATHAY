@@ -59,9 +59,32 @@ function FlashcardPage() {
         .then(data => { setCards(data || []); setLoading(false); })
         .catch(() => setLoading(false));
     } else {
-      documentService.getFlashcards(id)
-        .then(data => { setCards(data || []); setLoading(false); })
-        .catch(() => setLoading(false));
+      const loadFlashcards = async () => {
+        try {
+          let data = await documentService.getFlashcards(id);
+          
+          // If empty, trigger generation via startFlashcard and refetch
+          if (!data || data.length === 0) {
+            try {
+              const session = await studyService.startFlashcard(id);
+              if (session?.session_id) {
+                setSessionId(session.session_id);
+              }
+              data = await documentService.getFlashcards(id);
+            } catch (err) {
+              console.warn("Flashcard generation failed:", err);
+            }
+          }
+          
+          setCards(data || []);
+        } catch (err) {
+          setCards([]);
+        } finally {
+          setLoading(false);
+        }
+      };
+      
+      loadFlashcards();
     }
   }, [user_id, docId]);
 

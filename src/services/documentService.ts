@@ -45,6 +45,21 @@ export const documentService = {
     return apiClient.postForm<SummaryResult>("/api/miniapp/auto-generate", formData);
   },
 
+  async fastUpload(file: File, mode: "quiz" | "flashcard" | "both" = "quiz"): Promise<{
+    id: string;
+    name: string;
+    doc_type: string;
+    timestamp: number;
+    text_length: number;
+    mode: string;
+    status: string;
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mode", mode);
+    return apiClient.postForm("/api/miniapp/fast-upload", formData);
+  },
+
   async getDocuments(): Promise<Document[]> {
     return apiClient.get<Document[]>("/api/miniapp/documents");
   },
@@ -81,6 +96,18 @@ export const documentService = {
       steps: string[];
       answer: string;
     }>("/api/miniapp/solve-problem", formData);
+  },
+
+  async solveText(question: string): Promise<{
+    question: string;
+    steps: string[];
+    answer: string;
+  }> {
+    return apiClient.post<{
+      question: string;
+      steps: string[];
+      answer: string;
+    }>("/api/miniapp/solve-text", { question });
   },
 
   async generateQuizFromSolution(solution: {

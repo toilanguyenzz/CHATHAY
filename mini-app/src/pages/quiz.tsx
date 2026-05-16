@@ -137,6 +137,7 @@ function QuizPage() {
 
   const nextQuestion = () => {
     if (currentQ + 1 >= total) { setQuizDone(true); return; }
+    setTimer(30); // Reset timer immediately
     setCurrentQ(p => p + 1);
     setSelected(null);
     setShowResult(false);

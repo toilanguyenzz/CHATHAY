@@ -124,6 +124,28 @@ function SolveProblemPage() {
   const [text, setText] = useState("");
   const [thinking, setThinking] = useState(false);
   const [lastSolution, setLastSolution] = useState<any>(null);
+  const [pastedImage, setPastedImage] = useState<string | null>(null);
+
+  // Handle paste image from clipboard
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let item of items) {
+      if (item.type.indexOf("image") !== -1) {
+        const file = item.getAsFile();
+        if (file) {
+          // Show preview
+          const url = URL.createObjectURL(file);
+          setPastedImage(url);
+          // Auto upload after 1s
+          setTimeout(() => {
+            handleImg(file);
+            setPastedImage(null);
+          }, 1000);
+        }
+        break;
+      }
+    }
+  };
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
 
@@ -169,11 +191,26 @@ function SolveProblemPage() {
   const empty = messages.length === 0;
 
   return (
-    <Page className="ch-page" style={{ paddingBottom: 0 }}>
+    <Page className="ch-page" style={{ paddingBottom: 0 }} onPaste={handlePaste} tabIndex={0}>
       <input ref={camRef} type="file" accept="image/*" capture="environment" onChange={e => { const f = e.target.files?.[0]; if (f) handleImg(f); e.target.value = ""; }} style={{ display: "none" }} />
       <input ref={galRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) handleImg(f); e.target.value = ""; }} style={{ display: "none" }} />
 
       <Box style={{ display: "flex", flexDirection: "column", height: "100vh", maxWidth: 480, margin: "0 auto", background: "#F8F7FF" }}>
+
+        {/* Paste Image Preview Overlay */}
+        {pastedImage && (
+          <Box style={{
+            position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+            background: "rgba(0,0,0,0.8)", zIndex: 9999,
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          }}>
+            <Box style={{ textAlign: "center", color: "white", marginBottom: 16 }}>
+              <Text style={{ fontSize: 64 }}>🖼️</Text>
+              <Text style={{ fontSize: 18, fontWeight: 700 }}>Đang xử lý ảnh...</Text>
+            </Box>
+            <img src={pastedImage} alt="Pasted" style={{ maxWidth: "80%", maxHeight: "60vh", borderRadius: 16 }} />
+          </Box>
+        )}
 
         {/* ═══ HEADER ═══ */}
         <Box style={{
@@ -329,7 +366,10 @@ function SolveProblemPage() {
         </Box>
 
         {/* ═══ INPUT BAR ═══ */}
-        <Box style={{
+        <Box
+          onPaste={handlePaste}
+          tabIndex={0}
+          style={{
           padding: "10px 12px", paddingBottom: "max(12px, env(safe-area-inset-bottom))",
           background: "white", borderTop: "1px solid #EDE9FE",
           boxShadow: "0 -2px 8px rgba(139,92,246,0.04)",

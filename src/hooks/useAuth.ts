@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 export interface AuthState {
   user_id: string | null;
   access_token: string | null;
+  display_name: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -11,6 +12,7 @@ export interface AuthState {
 const authAtom = atom<AuthState>({
   user_id: null,
   access_token: null,
+  display_name: null,
   loading: true,
   error: null,
 });
@@ -43,6 +45,7 @@ export const useAuth = () => {
             setAuth({
               user_id: parsed.user_id,
               access_token: parsed.access_token,
+              display_name: parsed.display_name || null,
               loading: false,
               error: null,
             });
@@ -57,7 +60,7 @@ export const useAuth = () => {
           const result = await withTimeout(zmp.default.getAccessToken(), 3000);
           if (result?.accessToken) {
             // Exchange token for user info via backend
-            const backendUrl = import.meta.env.VITE_API_URL || "https://chathaychathay-service.onrender.com";
+            const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
             const resp = await fetch(`${backendUrl}/api/miniapp/auth`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -65,9 +68,43 @@ export const useAuth = () => {
             });
             const data = await resp.json();
             if (data.user_id) {
+              // Get display_name from Zalo or create/update user profile
+              let displayName = data.display_name || data.user_id;
+              try {
+                // First try to get existing profile
+                const profileResp = await fetch(`${backendUrl}/api/user-profile/${data.user_id}`, {
+                  method: "GET",
+                  headers: {
+                    "X-User-Id": data.user_id,
+                  },
+                });
+                if (profileResp.ok) {
+                  const profileData = await profileResp.json();
+                  if (profileData?.display_name) {
+                    displayName = profileData.display_name;
+                  }
+                } else {
+                  // Profile doesn't exist, create it with default name
+                  await fetch(`${backendUrl}/api/user-profile`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      user_id: data.user_id,
+                      display_name: displayName,
+                      role: "student",
+                    }),
+                  });
+                }
+              } catch (e) {
+                console.warn("Failed to fetch user profile:", e);
+              }
+
               const authData = {
                 user_id: data.user_id,
                 access_token: result.accessToken,
+                display_name: displayName,
                 loading: false,
                 error: null,
               };
@@ -85,6 +122,7 @@ export const useAuth = () => {
         const devUser = {
           user_id: "local_dev_user_001",
           access_token: "dev_token",
+          display_name: "Local Dev User",
           loading: false,
           error: null,
         };
@@ -103,7 +141,7 @@ export const useAuth = () => {
 
   const logout = () => {
     localStorage.removeItem("chathay_auth");
-    setAuth({ user_id: null, access_token: null, loading: false, error: null });
+    setAuth({ user_id: null, access_token: null, display_name: null, loading: false, error: null });
   };
 
   return { ...auth, initialized, logout };

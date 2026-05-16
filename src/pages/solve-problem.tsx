@@ -200,14 +200,22 @@ function SolveProblemPage() {
     } finally { setThinking(false); }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const t = text.trim(); if (!t || thinking) return;
     setText(""); add({ role: "user", type: "text", content: t });
     setThinking(true);
-    setTimeout(() => {
-      add({ role: "ai", type: "text", content: `Mình hiểu câu hỏi của bạn rồi! 🧠\n\nĐể giải chính xác nhất, bạn hãy:\n\n📸 Chụp ảnh đề bài → mình OCR + giải chi tiết\n📝 Hoặc gõ rõ đề bài với đầy đủ số liệu\n\nMình sẵn sàng giúp bạn! ✨` });
-      setThinking(false);
-    }, 1200);
+    try {
+      const r = await documentService.solveText(t);
+      setLastSolution(r);
+      add({ role: "ai", type: "solution", content: "", solution: r });
+    } catch (e: any) {
+      const errorMsg = e?.message || "";
+      if (errorMsg.includes("429") || errorMsg.includes("hết lượt")) {
+        add({ role: "ai", type: "text", content: `⚠️ Bạn đã hết lượt giải bài hôm nay.\nQuay lại ngày mai nhé! 🌅` });
+      } else {
+        add({ role: "ai", type: "text", content: `Mình chưa giải được câu này 😔\n\nHãy thử:\n• Gõ rõ đề bài hơn (kèm số liệu cụ thể)\n• Hoặc chụp ảnh đề bài để mình OCR + giải chi tiết\n\nMình sẵn sàng giúp bạn! ✨` });
+      }
+    } finally { setThinking(false); }
   };
 
   const handleQuiz = async () => {

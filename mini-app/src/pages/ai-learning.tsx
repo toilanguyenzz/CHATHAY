@@ -59,6 +59,28 @@ function AILearningPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [activeRole, setActiveRole] = useState<"student" | "teacher">("student");
+  const [pastedImage, setPastedImage] = useState<string | null>(null);
+
+  // Handle paste image from clipboard
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let item of items) {
+      if (item.type.indexOf("image") !== -1) {
+        const file = item.getAsFile();
+        if (file) {
+          const url = URL.createObjectURL(file);
+          setPastedImage(url);
+          // Auto upload after 800ms
+          setTimeout(async () => {
+            await documentService.uploadAndProcess(file);
+            setPastedImage(null);
+            loadData();
+          }, 800);
+        }
+        break;
+      }
+    }
+  };
 
   const loadData = () => {
     if (!user_id) return;
@@ -181,9 +203,24 @@ function AILearningPage() {
   const features = activeRole === "student" ? studentFeatures : teacherFeatures;
 
   return (
-    <Page className="ch-page">
+    <Page className="ch-page" onPaste={handlePaste} tabIndex={0}>
       <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
         onChange={handleFileUpload} style={{ display: "none" }} />
+
+      {/* Paste Image Preview Overlay */}
+      {pastedImage && (
+        <Box style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.8)", zIndex: 9999,
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        }}>
+          <Box style={{ textAlign: "center", color: "white", marginBottom: 16 }}>
+            <Text style={{ fontSize: 64 }}>🖼️</Text>
+            <Text style={{ fontSize: 18, fontWeight: 700 }}>Đang xử lý ảnh...</Text>
+          </Box>
+          <img src={pastedImage} alt="Pasted" style={{ maxWidth: "80%", maxHeight: "60vh", borderRadius: 16 }} />
+        </Box>
+      )}
 
       <Box className="ch-container ch-stagger" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 

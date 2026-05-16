@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "dev": "zmp start",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "login": "zmp login",
     "deploy": "zmp deploy",

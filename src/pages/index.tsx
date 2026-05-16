@@ -75,7 +75,7 @@ function HubPage() {
           <Box style={{ position: "absolute", bottom: -30, left: -20, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.05)", animation: "floatOrb 10s ease-in-out infinite reverse" }} />
 
           <Box style={{ position: "relative", zIndex: 2 }}>
-            {/* Top row: Logo + Streak */}
+            {/* Top row: Logo + Streak + Demo Button */}
             <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
               <Box style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <Box style={{
@@ -92,6 +92,17 @@ function HubPage() {
                   </Text>
                 </Box>
               </Box>
+              {/* Demo Quiz Button */}
+              <Box onClick={() => navigate("/demo-quiz")} style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "8px 14px", borderRadius: 20,
+                background: "rgba(251,191,36,0.3)",
+                border: "1px solid rgba(251,191,36,0.5)",
+                cursor: "pointer",
+              }}>
+                <Text style={{ fontSize: 14, fontWeight: 800, color: "#FBBF24" }}>🎯 Làm Demo</Text>
+              </Box>
+              <Box style={{ display: "flex", alignItems: "center", gap: 4, width: 1 }} />
               {/* Streak badge */}
               <Box style={{
                 display: "flex", alignItems: "center", gap: 4,
@@ -248,9 +259,9 @@ function HubPage() {
               </Text>
               <Box style={{ display: "flex", gap: 10 }}>
                 {[
-                  { emoji: "📁", label: "Kho tài liệu", desc: `${docCount} file`, color: "#3B82F6", bg: "#EFF6FF", action: () => navigate("/vault") },
-                  { emoji: "🗂️", label: "Flashcard", desc: "SM-2", color: "#8B5CF6", bg: "#F5F3FF", action: () => navigate("/flashcard") },
-                  { emoji: "✅", label: "Quiz", desc: "Timer", color: "#EC4899", bg: "#FDF2F8", action: () => navigate("/quiz") },
+                  { emoji: "🎯", label: "Demo Quiz", desc: "Thử ngay!", color: "#F59E0B", bg: "#FFFBEB", action: () => navigate("/demo-quiz") },
+                  { emoji: "🏆", label: "Leaderboard", desc: "Top lớp", color: "#10B981", bg: "#ECFDF5", action: () => navigate("/leaderboard") },
+                  { emoji: "📚", label: "Kho tài liệu", desc: `${docCount} file`, color: "#3B82F6", bg: "#EFF6FF", action: () => navigate("/vault") },
                 ].map((item, i) => (
                   <Box key={i} onClick={item.action} style={{
                     flex: 1, padding: "16px 10px", borderRadius: 18,

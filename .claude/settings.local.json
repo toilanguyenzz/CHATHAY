@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(timeout 10)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "memory",
+    "filesystem",
+    "pdf",
+    "openvision",
+    "projectscan",
+    "openfiles",
+    "browserdocs",
+    "projectedit"
+  ]
+}

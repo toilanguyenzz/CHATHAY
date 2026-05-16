@@ -78,13 +78,19 @@ class ApiClient {
     if (this.userId) {
       headers["X-User-Id"] = this.userId;
     }
+    // Không set Content-Type - browser tự động set multipart/form-data với boundary
     const resp = await fetch(url, {
       method: "POST",
       headers,
       body: formData,
     });
     if (!resp.ok) {
-      const error = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+      let error;
+      try {
+        error = await resp.json();
+      } catch {
+        error = { error: `HTTP ${resp.status}: ${resp.statusText}` };
+      }
       throw new Error(error.error || `Request failed: ${resp.status}`);
     }
     return resp.json();

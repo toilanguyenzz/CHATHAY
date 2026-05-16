@@ -1,0 +1,51 @@
+# Bối cảnh Dự án (Chat Hay)
+- **Frontend**: React, TypeScript, TailwindCSS (Zalo Mini App)
+- **Backend**: FastAPI (Python)
+- **Mục tiêu**: Super App giáo dục, tập trung xử lý tài liệu, Quiz/Flashcard, Bảng điều khiển B2B.
+
+# Quy tắc cốt lõi (Dựa trên Andrej Karpathy Guidelines)
+
+## 1. Think Before Coding (Suy nghĩ trước khi gõ)
+**Không đoán mò. Không giấu giếm sự khó hiểu. Đưa ra các lựa chọn (trade-offs).**
+Trước khi viết code:
+- Nêu rõ các giả định của bạn. Nếu không chắc chắn, hãy HỎI.
+- Nếu có nhiều cách hiểu, hãy trình bày chúng ra - đừng âm thầm chọn một cách.
+- Nếu có cách đơn giản hơn, hãy đề xuất. Hãy phản biện nếu thấy yêu cầu của User chưa hợp lý.
+- Nếu gặp đoạn code rắc rối (ví dụ: state management trong React, logic router FastAPI), hãy dừng lại. Gọi tên sự rắc rối đó và hỏi người dùng.
+
+## 2. Simplicity First (Đơn giản là trên hết)
+**Viết số lượng code tối thiểu để giải quyết vấn đề. Không code "phòng hờ".**
+- Không làm thêm tính năng ngoài yêu cầu.
+- Không tạo abstraction cho những đoạn code chỉ dùng 1 lần.
+- Không thêm sự "linh hoạt" hay "cấu hình" nếu không được yêu cầu.
+- Không viết code xử lý lỗi cho những trường hợp phi thực tế.
+- Nếu bạn định viết 200 dòng nhưng có thể rút gọn thành 50 dòng, hãy viết lại.
+*Tự hỏi: "Một Senior Engineer có thấy cái này quá phức tạp không?" Nếu có, hãy đơn giản hóa.*
+
+## 3. Surgical Changes (Chỉnh sửa như phẫu thuật)
+**Chỉ chạm vào những gì bắt buộc. Chỉ dọn dẹp "bãi rác" của chính mình.**
+Khi sửa code có sẵn:
+- KHÔNG "cải thiện" hay format các đoạn code lân cận nếu không liên quan tới task.
+- KHÔNG refactor những thứ đang không bị hỏng.
+- Tôn trọng phong cách code hiện tại, dù bạn có thích cách khác hơn.
+- Nếu thấy dead code (code rác) không liên quan, hãy nhắc người dùng - ĐỪNG tự xóa.
+Khi code của bạn tạo ra sự dư thừa:
+- Hãy xóa các imports/variables/functions mà thay đổi CỦA BẠN làm cho chúng trở nên thừa thãi.
+- Đừng xóa các dead code có từ trước trừ khi được yêu cầu.
+*Tiêu chí: Mọi dòng code bị thay đổi đều phải phục vụ trực tiếp cho yêu cầu của người dùng.*
+
+## 4. Goal-Driven Execution (Thực thi theo mục tiêu)
+**Định nghĩa tiêu chí thành công. Lặp lại đến khi hoàn tất.**
+Biến các task thành các mục tiêu có thể kiểm chứng được:
+- Thay vì "Thêm validation" → "Xác định các input lỗi, cập nhật Pydantic model/Zod schema, test thử".
+- Thay vì "Sửa bug này" → "Xác định cách tái hiện bug, rồi viết code để sửa".
+
+Đối với task nhiều bước, hãy in ra một kế hoạch ngắn gọn trước khi code:
+1. [Bước 1] → Cách kiểm tra: [xác minh bằng cách nào]
+2. [Bước 2] → Cách kiểm tra: [xác minh bằng cách nào]
+
+## 5. Quy tắc riêng cho dự án Chat Hay
+- **Luôn luôn đọc file `PROJECT_STATE.md`** để nắm rõ ngữ cảnh và luồng đi của dự án trước khi thực hiện các sửa đổi lớn.
+- **React/Vite**: Bám sát cấu trúc Component hiện tại. Ưu tiên TailwindCSS, hạn chế viết file CSS rời.
+- **FastAPI**: Luôn đảm bảo endpoint có logic validation rõ ràng bằng Pydantic.
+- **Git**: Commit chia nhỏ theo cụm tính năng logic (atomic commit).

@@ -1,5 +1,5 @@
 import { atom, useAtom } from "jotai";
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 
 export interface AuthState {
   user_id: string | null;
@@ -27,11 +27,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export const useAuth = () => {
   const [auth, setAuth] = useAtom(authAtom);
-  const [initialized, setInitialized] = useState(false);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
-    // Prevent re-init if already done
-    if (initialized) return;
+    // Prevent re-init using ref (avoids race condition)
+    if (initializedRef.current) return;
+    initializedRef.current = true;
 
     const initAuth = async () => {
       try {
@@ -46,7 +47,6 @@ export const useAuth = () => {
               loading: false,
               error: null,
             });
-            setInitialized(true);
             return;
           }
         }
@@ -55,24 +55,24 @@ export const useAuth = () => {
         try {
           const zmp = await import("zmp-sdk");
           const result = await withTimeout(zmp.default.getAccessToken(), 3000);
-          if (result?.accessToken) {
+          const accessToken = (result as any)?.accessToken || result;
+          if (accessToken && typeof accessToken === "string") {
             // Exchange token for user info via backend
             const resp = await fetch(`${API_BASE}/api/miniapp/auth`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ access_token: result.accessToken }),
+              body: JSON.stringify({ access_token: accessToken }),
             });
             const data = await resp.json();
             if (data.user_id) {
               const authData = {
                 user_id: data.user_id,
-                access_token: result.accessToken,
+                access_token: accessToken,
                 loading: false,
                 error: null,
               };
               setAuth(authData);
               localStorage.setItem("chathay_auth", JSON.stringify(authData));
-              setInitialized(true);
               return;
             }
           }
@@ -92,8 +92,6 @@ export const useAuth = () => {
         console.info("🧪 Running in LOCAL DEV mode with mock user:", devUser.user_id);
       } catch (err: any) {
         setAuth((prev) => ({ ...prev, loading: false, error: err.message }));
-      } finally {
-        setInitialized(true);
       }
     };
 
@@ -105,7 +103,7 @@ export const useAuth = () => {
     setAuth({ user_id: null, access_token: null, loading: false, error: null });
   };
 
-  return { ...auth, initialized, logout };
+  return { ...auth, initialized: initializedRef.current, logout };
 };
 
 // Will be set by api.ts after config load

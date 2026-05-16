@@ -1,0 +1,9 @@
+# Zalo Doc Bot - Trợ lý AI Tài liệu
+
+
+# 📄 Zalo Doc Bot
+✅ Server is running!
+Trợ lý AI tóm tắt tài liệu qua Zalo OA
+📌 App ID: 1534343952928885811
+🔗 Webhook: POST /webhook/zalo
+🔒 Domain verified by Zalo Platform

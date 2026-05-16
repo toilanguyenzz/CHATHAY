@@ -6,6 +6,7 @@ import { documentService } from "../services/documentService";
 import { useAuth } from "../hooks/useAuth";
 import { EmptyState } from "../components/EmptyState";
 import { playCorrectSound, playWrongSound, playTickSound } from "../hooks/useSound";
+import { QuizShareCard } from "../components/ShareCard";
 
 interface Question {
   id: number;
@@ -32,7 +33,9 @@ function QuizPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewData, setReviewData] = useState<any>(null);
+  const [reviewIdx, setReviewIdx] = useState(0);
   const [allDocs, setAllDocs] = useState<any[]>([]);
+  const [showShareCard, setShowShareCard] = useState(false);
 
   // Load all documents for suggestion
   useEffect(() => {
@@ -51,25 +54,65 @@ function QuizPage() {
     const loadQuiz = async () => {
       try {
         if (id) {
-          // Start quiz session via backend
-          const session = await studyService.startQuiz(id);
-          setSessionId(session.session_id);
-          // Load questions from the session
-          const qs = await studyService.getQuizQuestions(id);
-          setQuestions(qs || []);
+          // Step 1: Try loading pre-generated quiz questions from DB
+          let qs = await studyService.getQuizQuestions(id);
+          let loadedQs = Array.isArray(qs) ? qs : [];
 
-          // Restore progress from sessionStorage
-          const savedQ = sessionStorage.getItem(`quiz_${id}_currentQ`);
-          const savedSession = sessionStorage.getItem(`quiz_${id}_sessionId`);
-          if (savedQ && savedSession === session.session_id) {
-            setCurrentQ(parseInt(savedQ, 10));
+          // Step 2: Start a session for score tracking (or generate if missing)
+          try {
+            const session = await studyService.startQuiz(id);
+            if (session?.session_id) {
+              setSessionId(session.session_id);
+              // Restore progress from sessionStorage
+              const savedQ = sessionStorage.getItem(`quiz_${id}_currentQ`);
+              const savedSession = sessionStorage.getItem(`quiz_${id}_sessionId`);
+              if (savedQ && savedSession === session.session_id) {
+                setCurrentQ(parseInt(savedQ, 10));
+              }
+            }
+
+            // If questions were empty, startQuiz just generated them, so fetch again!
+            if (loadedQs.length === 0) {
+              qs = await studyService.getQuizQuestions(id);
+              loadedQs = Array.isArray(qs) ? qs : [];
+            }
+          } catch (sessionErr) {
+            console.warn("Quiz session start failed:", sessionErr);
+          }
+
+          if (loadedQs.length > 0) {
+            // Transform raw quiz data to match Question interface
+            const formattedQs = loadedQs.map((q: any, idx: number) => {
+              if (q.options?.[0]?.isCorrect !== undefined) return q;
+
+              const options = (q.options || []).map((opt: any, i: number) => {
+                const text = typeof opt === "string" ? opt : (opt.text || opt.label || String(opt));
+                return {
+                  label: String.fromCharCode(65 + i),
+                  text,
+                  isCorrect: i === q.correct,
+                };
+              });
+
+              return {
+                id: q.id || idx,
+                question: q.question,
+                options,
+                explanation: q.explanation || "",
+                category: q.category || q.difficulty || "Học tập",
+              };
+            });
+
+            setQuestions(formattedQs);
+          } else {
+            setQuestions([]);
           }
         } else {
-          // Load default mock if no doc
           setQuestions([]);
         }
       } catch (e) {
         console.error("Failed to load quiz:", e);
+        setQuestions([]);
       } finally {
         setLoading(false);
       }
@@ -196,7 +239,6 @@ function QuizPage() {
 
   /* Review Screen */
   if (reviewMode && reviewData) {
-    const [reviewIdx, setReviewIdx] = useState(0);
     const item = reviewData.questions[reviewIdx];
 
     return (
@@ -302,17 +344,13 @@ function QuizPage() {
     const msg = getMessage();
     const shareText = studyService.generateQuizShareText(
       { correct: score, total, percentage: percent, grade: msg.title },
-      card?.category || "Quiz"
+      question?.category || "Quiz"
     );
 
     const handleShare = async () => {
       try {
-        if (navigator.share) {
-          await navigator.share({ text: shareText });
-        } else if (navigator.clipboard) {
-          await navigator.clipboard.writeText(shareText);
-          alert("Đã copy kết quả vào clipboard! Dán vào Zalo để chia sẻ nhé.");
-        }
+        // Show share card preview first
+        setShowShareCard(true);
       } catch (e) {
         // User cancelled share
       }
@@ -322,6 +360,7 @@ function QuizPage() {
       if (!sessionId) return;
       const data = await studyService.getQuizReview(sessionId);
       setReviewData(data);
+      setReviewIdx(0);
       setReviewMode(true);
     };
 
@@ -357,10 +396,10 @@ function QuizPage() {
           </Box>
 
           {/* Next Document Suggestion */}
-          {allDocs.filter((d: any) => d.id !== (docId || card?.doc_id)).length > 0 && (
+          {allDocs.filter((d: any) => d.id !== docId).length > 0 && (
             <Box style={{ width: "100%", maxWidth: 280 }}>
               <Text className="ch-caption" style={{ marginBottom: 8, textAlign: "center" }}>📚 Học tiếp tài liệu khác:</Text>
-              {allDocs.filter((d: any) => d.id !== (docId || card?.doc_id)).slice(0, 3).map((doc: any) => (
+              {allDocs.filter((d: any) => d.id !== docId).slice(0, 3).map((doc: any) => (
                 <Box key={doc.id} className="ch-btn-secondary" onClick={() => {
                   nav(`/quiz?doc=${doc.id}`);
                   resetQuiz();
@@ -386,6 +425,55 @@ function QuizPage() {
             <Text style={{ fontSize: "var(--font-size-sm)", fontWeight: 700, color: "var(--color-text-secondary)" }}>Về trang chủ</Text>
           </Box>
         </Box>
+
+        {/* Share Card Modal */}
+        {showShareCard && (
+          <Box
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.75)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 10000,
+              padding: 20,
+              backdropFilter: "blur(4px)",
+            }}
+            onClick={() => setShowShareCard(false)}
+          >
+            <Box
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "100%",
+                maxWidth: 360,
+                background: "transparent",
+                borderRadius: 20,
+                padding: 20,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+              }}
+            >
+              <QuizShareCard
+                score={score}
+                total={total}
+                percentage={percent}
+                docName={docId || "Quiz"}
+              />
+              <Text
+                style={{
+                  marginTop: 16,
+                  fontSize: 12,
+                  color: "rgba(255,255,255,0.7)",
+                  textAlign: "center",
+                }}
+              >
+                Chạm để đóng
+              </Text>
+            </Box>
+          </Box>
+        )}
       </Page>
     );
   }
@@ -470,7 +558,7 @@ function QuizPage() {
         {/* Explanation */}
         {showResult && (
           <Box className="ch-explanation animate-slide-up" style={{ marginTop: 16 }}>
-            {selected < 0 ? (
+            {selected != null && selected < 0 ? (
               <Text style={{ fontSize: "var(--font-size-sm)", fontWeight: 600, color: "#6B7280", lineHeight: 1.6 }}>
                 ⏭️ Bạn đã bỏ qua câu này.
                 {question && (() => {
@@ -478,11 +566,11 @@ function QuizPage() {
                   return correctIdx >= 0 ? ` Đáp án đúng: ${String.fromCharCode(65 + correctIdx)}` : "";
                 })()}
               </Text>
-            ) : (
+            ) : selected != null ? (
               <Text style={{ fontSize: "var(--font-size-sm)", fontWeight: 600, color: "#92400E", lineHeight: 1.6 }}>
                 💡 {question?.explanation}
               </Text>
-            )}
+            ) : null}
           </Box>
         )}
 
