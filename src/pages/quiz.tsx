@@ -49,7 +49,7 @@ function QuizPage() {
   useEffect(() => {
     if (!user_id) return;
     setLoading(true);
-    const id = docId || new URLSearchParams(window.location.search).get("doc");
+    const id = docId || new URLSearchParams(window.location.search).get("doc_id") || new URLSearchParams(window.location.search).get("doc");
 
     const loadQuiz = async () => {
       try {
@@ -221,18 +221,153 @@ function QuizPage() {
     );
   }
 
-  if (total === 0) {
+  // Inline upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  const handleInlineUpload = async (file: File) => {
+    const validExts = [".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp"];
+    const ext = file.name.toLowerCase().substring(file.name.lastIndexOf("."));
+    if (!validExts.includes(ext)) {
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) return;
+
+    setUploading(true);
+    setUploadProgress("⚡ Đang trích xuất nội dung...");
+    try {
+      const result = await documentService.fastUpload(file, "quiz");
+      setUploadProgress("🧠 Đang tạo Quiz từ file...");
+      // Reload quiz with the new doc_id
+      window.location.href = `/quiz?doc_id=${result.id}`;
+    } catch (err: any) {
+      setUploadProgress("❌ " + (err.message || "Lỗi xử lý file"));
+      setTimeout(() => {
+        setUploading(false);
+        setUploadProgress("");
+      }, 2000);
+    }
+  };
+
+  if (total === 0 && !uploading) {
     return (
       <Page className="ch-page">
-        <EmptyState
-          emoji="📭"
-          title="Chưa có Quiz"
-          description="Tải tài liệu để tự động tạo Quiz nhé!"
-          actionLabel="Tải tài liệu"
-          onAction={() => nav("/file-processing")}
-          secondaryActionLabel="Về trang chủ"
-          onSecondaryAction={() => nav("/")}
-        />
+        <Box className="ch-container" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 80px)", gap: 20 }}>
+          
+          {/* Header */}
+          <Box style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", marginBottom: 8 }}>
+            <Box onClick={() => nav("/")} style={{
+              width: 38, height: 38, borderRadius: "var(--radius-full)",
+              background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+            }}>
+              <Icon icon="zi-chevron-left" style={{ fontSize: 18, color: "var(--color-text-secondary)" }} />
+            </Box>
+            <Text style={{ fontSize: 20, fontWeight: 900, color: "var(--color-text-primary)" }}>🧠 Quiz & Flashcard</Text>
+          </Box>
+
+          {/* Upload Area */}
+          <Box style={{
+            width: "100%", maxWidth: 380, padding: "32px 24px", textAlign: "center",
+            borderRadius: "var(--radius-xl)",
+            background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)",
+            border: "2px dashed #6366F1",
+          }}>
+            <Text style={{ fontSize: 48, lineHeight: 1, marginBottom: 12 }}>📄</Text>
+            <Text style={{ fontSize: 18, fontWeight: 900, color: "#4338CA", marginBottom: 6 }}>
+              Tải file lên để làm Quiz
+            </Text>
+            <Text style={{ fontSize: 13, color: "#6366F1", lineHeight: 1.5, marginBottom: 20 }}>
+              AI sẽ trích xuất TẤT CẢ câu hỏi trong file
+              {"\n"}+ tạo Flashcard tự động
+            </Text>
+
+            {/* Quick Action Buttons */}
+            <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <Box onClick={() => cameraInputRef.current?.click()} style={{
+                padding: "14px 8px", borderRadius: 14,
+                background: "linear-gradient(135deg,#10B981,#059669)",
+                color: "white", cursor: "pointer", textAlign: "center",
+                boxShadow: "0 4px 12px rgba(16,185,129,0.3)",
+              }}>
+                <Text style={{ fontSize: 22, lineHeight: 1, marginBottom: 4 }}>📸</Text>
+                <Text style={{ fontSize: 12, fontWeight: 700, color: "white" }}>Chụp đề thi</Text>
+              </Box>
+              <Box onClick={() => fileInputRef.current?.click()} style={{
+                padding: "14px 8px", borderRadius: 14,
+                background: "linear-gradient(135deg,#8B5CF6,#7C3AED)",
+                color: "white", cursor: "pointer", textAlign: "center",
+                boxShadow: "0 4px 12px rgba(139,92,246,0.3)",
+              }}>
+                <Text style={{ fontSize: 22, lineHeight: 1, marginBottom: 4 }}>📁</Text>
+                <Text style={{ fontSize: 12, fontWeight: 700, color: "white" }}>Chọn file</Text>
+              </Box>
+            </Box>
+
+            <Text style={{ fontSize: 11, color: "#818CF8", fontWeight: 600 }}>
+              PDF, Word, Ảnh — Không giới hạn số câu
+            </Text>
+          </Box>
+
+          {/* Existing documents */}
+          {allDocs.length > 0 && (
+            <Box style={{ width: "100%", maxWidth: 380 }}>
+              <Text style={{ fontSize: 13, fontWeight: 700, color: "var(--color-text-secondary)", marginBottom: 8 }}>
+                📚 Hoặc chọn tài liệu đã có:
+              </Text>
+              {allDocs.slice(0, 5).map((doc: any) => (
+                <Box key={doc.id} onClick={() => {
+                  window.location.href = `/quiz?doc_id=${doc.id}`;
+                }} style={{
+                  padding: "12px 16px", borderRadius: 12, marginBottom: 6,
+                  background: "var(--color-bg-card)", border: "1px solid var(--color-border)",
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
+                }}>
+                  <Text style={{ fontSize: 16 }}>📖</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {doc.name || "Tài liệu"}
+                  </Text>
+                  <Icon icon="zi-chevron-right" style={{ fontSize: 14, color: "var(--color-text-tertiary)" }} />
+                </Box>
+              ))}
+            </Box>
+          )}
+
+          <Box onClick={() => nav("/")} style={{
+            marginTop: 4, padding: "12px 28px", borderRadius: "var(--radius-md)",
+            background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+            cursor: "pointer",
+          }}>
+            <Text style={{ fontSize: "var(--font-size-sm)", fontWeight: 700, color: "var(--color-text-secondary)" }}>🏠 Về trang chủ</Text>
+          </Box>
+
+          {/* Hidden inputs */}
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleInlineUpload(f); e.target.value = ""; }}
+            style={{ display: "none" }} />
+          <input ref={cameraInputRef} type="file" accept="image/*" capture="environment"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleInlineUpload(f); e.target.value = ""; }}
+            style={{ display: "none" }} />
+        </Box>
+      </Page>
+    );
+  }
+
+  // Uploading state
+  if (uploading) {
+    return (
+      <Page className="ch-page">
+        <Box className="ch-container" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 80px)", gap: 20 }}>
+          <Box style={{
+            width: 56, height: 56, borderRadius: "50%",
+            border: "3px solid #E9D5FF", borderTopColor: "#8B5CF6",
+            animation: "spin 1s linear infinite",
+          }} />
+          <Text style={{ fontSize: 16, fontWeight: 800, color: "#7C3AED" }}>{uploadProgress}</Text>
+          <Text style={{ fontSize: 13, color: "var(--color-text-tertiary)" }}>Đang xử lý file, vui lòng chờ...</Text>
+        </Box>
       </Page>
     );
   }
