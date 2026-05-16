@@ -37,6 +37,12 @@ function QuizPage() {
   const [allDocs, setAllDocs] = useState<any[]>([]);
   const [showShareCard, setShowShareCard] = useState(false);
 
+  // Inline upload state (must be before any early returns)
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+
   // Load all documents for suggestion
   useEffect(() => {
     if (!user_id) return;
@@ -220,12 +226,6 @@ function QuizPage() {
       </Page>
     );
   }
-
-  // Inline upload state
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const handleInlineUpload = async (file: File) => {
     const validExts = [".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp"];
@@ -479,7 +479,7 @@ function QuizPage() {
     const msg = getMessage();
     const shareText = studyService.generateQuizShareText(
       { correct: score, total, percentage: percent, grade: msg.title },
-      question?.category || "Quiz"
+      questions[0]?.category || "Quiz"
     );
 
     const handleShare = async () => {
