@@ -164,6 +164,27 @@ function SolveProblemPage() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, thinking]);
 
+  /* ─── Global Paste Handler (Ctrl+V) ─── */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (thinking) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          if (file.size > 10 * 1024 * 1024) return;
+          handleImg(file);
+          return;
+        }
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [thinking]);
+
   const add = (m: Omit<ChatMessage, "id">) => setMessages(p => [...p, { ...m, id: Date.now().toString() + Math.random() }]);
 
   const handleImg = async (file: File) => {

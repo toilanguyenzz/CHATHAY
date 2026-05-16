@@ -1,10 +1,11 @@
 import { Box, Page, Text, useNavigate } from "zmp-ui";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
 import { documentService } from "../services/documentService";
 import { apiClient } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 import { getGreeting } from "../utils/greeting";
 import { useSharedFile } from "../contexts/SharedFileContext";
+import { ShareQuizPanel } from "../components/ShareQuizPanel";
 import {
   IconDoc, IconUpload, IconChevronLeft, IconChevronRight,
   IconRefresh, IconAlertTriangle, IconInbox, IconSearch,
@@ -14,6 +15,43 @@ import {
 /* ─── Skeleton ─── */
 function Skeleton({ w = "100%", h = 20, r = 10, style }: { w?: string | number; h?: number; r?: number; style?: React.CSSProperties }) {
   return <Box className="ch-skeleton" style={{ width: w, height: h, borderRadius: r, ...style }} />;
+}
+
+/* ─── Error Boundary ─── */
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: string }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: "" };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message || "Lỗi không xác định" };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Box style={{ padding: 20, textAlign: "center" }}>
+          <Text style={{ fontSize: 16, fontWeight: 700, color: "#EF4444", marginBottom: 8 }}>
+            🚫 Có lỗi xảy ra
+          </Text>
+          <Text style={{ fontSize: 13, color: "#6B7280" }}>
+            {this.state.error}
+          </Text>
+          <Box
+            onClick={() => this.setState({ hasError: false, error: "" })}
+            style={{
+              marginTop: 12, padding: "10px 20px",
+              background: "var(--gradient-primary)",
+              color: "white", borderRadius: "var(--radius-full)",
+              display: "inline-block", cursor: "pointer", fontWeight: 700, fontSize: 13,
+            }}
+          >
+            Thử lại
+          </Box>
+        </Box>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 /* ─── Toast ─── */
@@ -28,6 +66,7 @@ function SummaryWithQA({ doc }: { doc: any }) {
   const [messages, setMessages] = useState<{ role: string; text: string }[]>([]);
   const [asking, setAsking] = useState(false);
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [localToast, setLocalToast] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -106,17 +145,27 @@ function SummaryWithQA({ doc }: { doc: any }) {
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setToast({ message: "📋 Đã sao chép!", type: "success" });
+      setLocalToast("📋 Đã sao chép!");
       if (window.ZMP) window.ZMP.hapticFeedback("light");
     } catch {
-      setToast({ message: "Không thể sao chép", type: "error" });
+      setLocalToast("Không thể sao chép");
     }
+    setTimeout(() => setLocalToast(null), 2000);
   };
 
   const quickPrompts = ["📌 Tóm tắt chính", "💡 Điểm quan trọng", "🎓 Bài học rút ra"];
 
   return (
     <Box ref={containerRef} style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}>
+      {/* Local toast for SummaryWithQA */}
+      {localToast && (
+        <Box style={{
+          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
+          padding: "10px 20px", borderRadius: 12, background: "#1F2937", color: "white",
+          fontSize: 13, fontWeight: 700, zIndex: 9999, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          animation: "fadeIn 0.2s ease-out",
+        }}>{localToast}</Box>
+      )}
 
       {/* ── Floating Tooltip for text selection ── */}
       {tooltip && (
@@ -158,33 +207,35 @@ function SummaryWithQA({ doc }: { doc: any }) {
 
         {/* ── Summary Section ── */}
         <Box ref={summaryRef} style={{ padding: "0 0 16px 0" }}>
-          <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-            <Box style={{
-              width: 28, height: 28, borderRadius: 8,
-              background: "linear-gradient(135deg, #3B82F6, #6366F1)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <IconDoc size={14} color="white" />
+          <ErrorBoundary>
+            <Box style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+              <Box style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: "linear-gradient(135deg, #3B82F6, #6366F1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <IconDoc size={14} color="white" />
+              </Box>
+              <Text style={{ fontSize: 15, fontWeight: 800, color: "var(--color-text-primary)" }}>
+                📋 Tóm tắt nội dung
+              </Text>
             </Box>
-            <Text style={{ fontSize: 15, fontWeight: 800, color: "var(--color-text-primary)" }}>
-              📋 Tóm tắt nội dung
-            </Text>
-          </Box>
-          <Box style={{
-            padding: "16px 18px",
-            borderRadius: 16,
-            background: "linear-gradient(135deg, #F8FAFF, #EEF2FF)",
-            border: "1px solid rgba(99,102,241,0.12)",
-            userSelect: "text",
-            WebkitUserSelect: "text",
-          }}>
-            <Text style={{
-              fontSize: 15, color: "var(--color-text-primary)", lineHeight: 1.85,
-              whiteSpace: "pre-wrap",
+            <Box style={{
+              padding: "16px 18px",
+              borderRadius: 16,
+              background: "linear-gradient(135deg, #F8FAFF, #EEF2FF)",
+              border: "1px solid rgba(99,102,241,0.12)",
+              userSelect: "text",
+              WebkitUserSelect: "text",
             }}>
-              {doc.summary || "Chưa có tóm tắt cho tài liệu này."}
-            </Text>
-          </Box>
+              <Text style={{
+                fontSize: 15, color: "var(--color-text-primary)", lineHeight: 1.85,
+                whiteSpace: "pre-wrap",
+              }}>
+                {doc?.summary || "Chưa có tóm tắt cho tài liệu này."}
+              </Text>
+            </Box>
+          </ErrorBoundary>
           {/* Hint */}
           <Box style={{
             display: "flex", alignItems: "center", gap: 6, marginTop: 10,
@@ -204,17 +255,19 @@ function SummaryWithQA({ doc }: { doc: any }) {
             border: "none", cursor: "pointer", color: "white",
           }}
             onClick={() => {
-              if (!doc.summary) return;
+              if (!doc?.summary) return;
               if (window.speechSynthesis.speaking) {
                 window.speechSynthesis.cancel();
-                setToast({ message: "⏹️ Đã dừng đọc", type: "info" });
+                setLocalToast("⏹️ Đã dừng đọc");
+                setTimeout(() => setLocalToast(null), 2000);
                 return;
               }
-              const utterance = new SpeechSynthesisUtterance(doc.summary);
+              const utterance = new SpeechSynthesisUtterance(doc.summary || "");
               utterance.lang = "vi-VN";
               utterance.rate = 0.9;
               window.speechSynthesis.speak(utterance);
-              setToast({ message: "🔊 Đang đọc tóm tắt...", type: "info" });
+              setLocalToast("🔊 Đang đọc tóm tắt...");
+              setTimeout(() => setLocalToast(null), 2000);
             }}
           >
             <Text style={{ fontSize: 18 }}>🔊</Text>
@@ -226,10 +279,12 @@ function SummaryWithQA({ doc }: { doc: any }) {
           {/* Share Button — Viral Loop */}
           <Box
             onClick={() => {
-              const shareText = `📄 Tóm tắt "${doc.name}":\n\n${doc.summary?.substring(0, 200)}${doc.summary && doc.summary.length > 200 ? '...' : ''}\n\n📚 Xem thêm tại Chat Hay — Trợ lý AI đọc tài liệu!`;
+              const docName = doc?.name || "tài liệu";
+              const summaryText = doc?.summary || "";
+              const shareText = `📄 Tóm tắt "${docName}":\n\n${summaryText.substring(0, 200)}${summaryText.length > 200 ? '...' : ''}\n\n📚 Xem thêm tại Chat Hay — Trợ lý AI đọc tài liệu!`;
               if (window.ZMP) {
                 window.ZMP.shareAppMessage({
-                  title: `Tóm tắt: ${doc.name}`,
+                  title: `Tóm tắt: ${docName}`,
                   desc: shareText,
                   type: "share",
                 });
@@ -354,67 +409,6 @@ function SummaryWithQA({ doc }: { doc: any }) {
         <div ref={messagesEndRef} />
       </Box>
 
-      {/* ── Rename Modal ── */}
-      {renameDoc && (
-        <Box style={{
-          position: "fixed", inset: 0,
-          background: "rgba(0,0,0,0.5)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          zIndex: 9999, padding: 20,
-        }}>
-          <Box style={{
-            width: "100%", maxWidth: 320,
-            background: "white", borderRadius: "var(--radius-xl)",
-            padding: "24px", boxShadow: "var(--shadow-xl)",
-            animation: "scaleIn 0.2s var(--ease-spring)",
-          }}>
-            <Text style={{ fontSize: 16, fontWeight: 800, color: "var(--color-text-primary)", marginBottom: 8 }}>
-              ✏️ Đổi tên tài liệu
-            </Text>
-            <Text style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-              Tên mới cho tài liệu:
-            </Text>
-            <input
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              autoFocus
-              style={{
-                width: "100%", padding: "12px 16px", borderRadius: "var(--radius-lg)",
-                border: "1.5px solid var(--color-border)", background: "var(--color-bg-subtle)",
-                fontSize: 15, fontFamily: "var(--font-family)", outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-            <Box style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <button
-                onClick={() => { setRenameDoc(null); setNewName(""); }}
-                style={{
-                  flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
-                  background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
-                  color: "var(--color-text-secondary)", fontWeight: 700, fontSize: 14,
-                  cursor: "pointer",
-                }}
-              >
-                Hủy
-              </button>
-              <button
-                onClick={handleRename}
-                disabled={!newName.trim()}
-                style={{
-                  flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
-                  background: newName.trim() ? "var(--gradient-primary)" : "var(--color-bg-subtle)",
-                  border: "none",
-                  color: newName.trim() ? "white" : "var(--color-text-tertiary)",
-                  fontWeight: 700, fontSize: 14,
-                  cursor: newName.trim() ? "pointer" : "not-allowed",
-                }}
-              >
-                Lưu
-              </button>
-            </Box>
-          </Box>
-        </Box>
-      )}
 
       {/* ── Fixed Input Area ── */}
       <Box style={{
@@ -464,9 +458,56 @@ function FileProcessingPage() {
   const [uploadProgress, setUploadProgress] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "error" | "success" | "info" } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ docId: string; name: string } | null>(null);
+  const [pastePreview, setPastePreview] = useState<{ file: File; url: string } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Active doc for viewing summary/Q&A
   const [activeDoc, setActiveDoc] = useState<any>(null);
+  const [loadingActiveDoc, setLoadingActiveDoc] = useState(false);
+
+  // Helper to load full doc details
+  const loadFullDoc = async (docId: string) => {
+    if (!user_id) return null;
+    try {
+      setLoadingActiveDoc(true);
+      console.log("[loadFullDoc] Loading doc:", docId);
+      const fullDoc = await documentService.getDocument(docId);
+      console.log("[loadFullDoc] Got fullDoc:", fullDoc);
+      return fullDoc;
+    } catch (e: any) {
+      console.error("[loadFullDoc] Failed to load full doc:", e);
+      return null;
+    } finally {
+      setLoadingActiveDoc(false);
+    }
+  };
+
+  // Handle clicking on a document to view details
+  const handleDocClick = async (doc: any) => {
+    console.log("[handleDocClick] Clicked doc:", doc.id, "isActive:", activeDoc?.id === doc.id);
+    const isActive = activeDoc?.id === doc.id;
+    if (isActive) {
+      console.log("[handleDocClick] Already active, toggling off");
+      setActiveDoc(null);
+      return;
+    }
+
+    // Load full details including summary and quiz
+    const fullDoc = await loadFullDoc(doc.id);
+    if (fullDoc) {
+      console.log("[handleDocClick] Setting activeDoc with fullDoc:", fullDoc);
+      setActiveDoc({
+        ...fullDoc,
+        summary: fullDoc.summary || "", // Ensure summary is never null
+        quiz_questions: fullDoc.quiz_questions || [],
+      });
+      setToast({ message: "✅ Đã tải tài liệu", type: "success" });
+    } else {
+      console.log("[handleDocClick] Fallback to basic doc info");
+      // Fallback to basic doc info
+      setActiveDoc({ ...doc, summary: "", quiz_questions: [] });
+      setToast({ message: "⚠️ Không thể tải chi tiết tài liệu", type: "error" });
+    }
+  };
 
   // Solve mode state
   const [solveResult, setSolveResult] = useState<any>(null);
@@ -493,6 +534,53 @@ function FileProcessingPage() {
   };
 
   useEffect(() => { loadData(); }, [user_id]);
+
+  /* ─── Global Paste Handler (Ctrl+V anywhere) ─── */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (uploading) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          if (file.size > 10 * 1024 * 1024) {
+            setToast({ message: "Ảnh quá lớn! Tối đa 10MB", type: "error" });
+            return;
+          }
+          const url = URL.createObjectURL(file);
+          setPastePreview({ file, url });
+          return;
+        }
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [uploading]);
+
+  /* ─── Drag & Drop Handler ─── */
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) await uploadFile(file);
+  };
+
+  /* ─── Confirm Paste Upload ─── */
+  const confirmPasteUpload = async () => {
+    if (!pastePreview) return;
+    URL.revokeObjectURL(pastePreview.url);
+    await uploadFile(pastePreview.file);
+    setPastePreview(null);
+  };
+  const cancelPaste = () => {
+    if (pastePreview) URL.revokeObjectURL(pastePreview.url);
+    setPastePreview(null);
+  };
 
   /* ─── Handle File Upload (from input) ─── */
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -533,7 +621,12 @@ function FileProcessingPage() {
     try {
       const result = await documentService.uploadAndProcess(file);
       setToast({ message: "✅ Xử lý thành công!", type: "success" });
-      setActiveDoc(result);
+      // ActiveDoc cần có quiz_questions để làm quiz
+      const activeDocWithQuiz = {
+        ...result,
+        quiz_questions: result.quiz || [],
+      };
+      setActiveDoc(activeDocWithQuiz);
       // Nếu là student mode (chụp SGK), tự động chuyển sang tab quiz
       if (studentMode) {
         setTimeout(() => {
@@ -634,6 +727,10 @@ function FileProcessingPage() {
   const [quizQuestions, setQuizQuestions] = useState<any[]>([]);
   const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
   const [quizScore, setQuizScore] = useState(0);
+
+  // Shared quiz state
+  const [showShareQuizPanel, setShowShareQuizPanel] = useState(false);
+  const [shareQuizData, setShareQuizData] = useState<{ quizId: string; title: string; questionsCount: number } | null>(null);
 
   const handleSolveCamera = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1035,34 +1132,47 @@ function FileProcessingPage() {
               padding: 16, marginBottom: 12,
               borderRadius: "var(--radius-lg)", background: "white",
               border: "1px solid #EF4444", cursor: "pointer",
-            }}
-              onClick={() => {
-                if (!documents.length) { setToast({ message: "❌ Cần tài liệu", type: "error" }); return; }
-                setToast({ message: "📝 Đang tạo đề thi...", type: "info" });
-              }}
-            >
+              onClick: () => {
+                if (!activeDoc) { setToast({ message: "❌ Cần tài liệu", type: "error" }); return; }
+                // Generate share code for this document's quiz
+                setShareQuizData({
+                  quizId: activeDoc.id,
+                  title: activeDoc.name,
+                  questionsCount: activeDoc.quiz_questions?.length || 5,
+                });
+                setShowShareQuizPanel(true);
+              }
+            }}>
               <Text style={{ fontWeight: 800, color: "#991B1B", marginBottom: 6 }}>
-                📝 Tạo đề thi từ tài liệu
+                📝 Tạo link share quiz
               </Text>
               <Text style={{ fontSize: "var(--font-size-xs)", color: "#DC2626" }}>
-                AI tự động ra 20 câu trắc nghiệm
+                Tạo link gửi cho học sinh — không tốn token mỗi lần học sinh làm
               </Text>
             </Box>
+            {shareQuizData && showShareQuizPanel && (
+              <ShareQuizPanel
+                quizId={shareQuizData.quizId}
+                title={shareQuizData.title}
+                questionsCount={shareQuizData.questionsCount}
+                onClose={() => setShowShareQuizPanel(false)}
+              />
+            )}
             <Box style={{
               padding: 16, marginBottom: 12,
               borderRadius: "var(--radius-lg)", background: "white",
               border: "1px solid #EF4444", cursor: "pointer",
-            }}
-              onClick={() => {
-                const c = prompt("Tên lớp:");
-                if (c) setToast({ message: `📤 Đã gửi bài cho ${c}!`, type: "success" });
-              }}
-            >
+              onClick: () => {
+                if (!activeDoc) { setToast({ message: "❌ Cần tài liệu", type: "error" }); return; }
+                // Navigate to teacher dashboard
+                navigate(`/teacher-dashboard/${activeDoc.id}`);
+              }
+            }}>
               <Text style={{ fontWeight: 800, color: "#991B1B", marginBottom: 6 }}>
-                📤 Giao bài tập (Zalo)
+                📊 Xem kết quả lớp học
               </Text>
               <Text style={{ fontSize: "var(--font-size-xs)", color: "#DC2626" }}>
-                Gửi link cho cả lớp qua Zalo
+                Theo dõi tiến độ học sinh theo thời gian thực
               </Text>
             </Box>
             <Box style={{
@@ -1087,8 +1197,6 @@ function FileProcessingPage() {
             </Box>
           </Box>
         )}
-
-        {/* ═════ STUDENT HACK: CHỤP SGK → QUIZ ═════ */}
         <Box
           onClick={() => cameraInputRef.current?.click()}
           style={{
@@ -1134,20 +1242,73 @@ function FileProcessingPage() {
           </Box>
         ) : (
           <>
-            {/* ══════ UPLOAD ZONE ══════ */}
-            <Box className="ch-card" style={{
-              padding: 28, textAlign: "center",
-              border: uploading ? "2px solid #8B5CF6" : "2px dashed #3B82F6",
-              borderRadius: "var(--radius-xl)",
-              background: uploading ? "linear-gradient(135deg,#F3E8FF,#EDE9FE)" : "linear-gradient(135deg,#EFF6FF,#DBEAFE)",
-              cursor: uploading ? "wait" : "pointer",
-            }} onClick={() => !uploading && fileInputRef.current?.click()}>
+            {/* ══════ PASTE PREVIEW MODAL ══════ */}
+            {pastePreview && (
+              <Box style={{
+                padding: 20, borderRadius: "var(--radius-xl)",
+                background: "linear-gradient(135deg, #F0FDF4, #DCFCE7)",
+                border: "2px solid #22C55E",
+                animation: "slideIn 0.3s ease-out",
+                textAlign: "center",
+              }}>
+                <Text style={{ fontSize: 14, fontWeight: 800, color: "#166534", marginBottom: 12 }}>
+                  Ảnh đã paste — Xử lý ngay?
+                </Text>
+                <img src={pastePreview.url} alt="Pasted" style={{
+                  maxWidth: "100%", maxHeight: 200, borderRadius: 14,
+                  border: "2px solid rgba(34,197,94,0.3)",
+                  objectFit: "contain", margin: "0 auto 14px", display: "block",
+                }} />
+                <Box style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                  <Box onClick={confirmPasteUpload} style={{
+                    padding: "10px 24px", borderRadius: 14, cursor: "pointer",
+                    background: "linear-gradient(135deg, #22C55E, #16A34A)",
+                    color: "white", fontWeight: 800, fontSize: 13,
+                    boxShadow: "0 4px 12px rgba(34,197,94,0.35)",
+                  }}>Tải lên & Xử lý</Box>
+                  <Box onClick={cancelPaste} style={{
+                    padding: "10px 24px", borderRadius: 14, cursor: "pointer",
+                    background: "#F3F4F6", border: "1px solid #E5E7EB",
+                    color: "#6B7280", fontWeight: 700, fontSize: 13,
+                  }}>Hủy</Box>
+                </Box>
+              </Box>
+            )}
+
+            {/* ══════ UPLOAD ZONE (Drag + Drop + Paste) ══════ */}
+            <Box className="ch-card"
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              style={{
+                padding: 28, textAlign: "center",
+                border: isDragging ? "2px solid #22C55E" : uploading ? "2px solid #8B5CF6" : "2px dashed #3B82F6",
+                borderRadius: "var(--radius-xl)",
+                background: isDragging
+                  ? "linear-gradient(135deg, #F0FDF4, #DCFCE7)"
+                  : uploading
+                    ? "linear-gradient(135deg,#F3E8FF,#EDE9FE)"
+                    : "linear-gradient(135deg,#EFF6FF,#DBEAFE)",
+                cursor: uploading ? "wait" : "pointer",
+                transition: "all 0.25s ease",
+              }} onClick={() => !uploading && fileInputRef.current?.click()}>
               {uploading ? (
                 <>
                   <Box style={{ width: 48, height: 48, borderRadius: "50%", border: "3px solid #E9D5FF",
                     borderTopColor: "#8B5CF6", animation: "spin 1s linear infinite", margin: "0 auto 12px" }} />
                   <Text style={{ fontSize: "var(--font-size-base)", fontWeight: 800, color: "#7C3AED" }}>{uploadProgress}</Text>
                   <Text className="ch-caption">Tóm tắt + Flashcard + Quiz trong 30 giây</Text>
+                </>
+              ) : isDragging ? (
+                <>
+                  <Box style={{ width: 56, height: 56, borderRadius: "var(--radius-full)",
+                    background: "linear-gradient(135deg,#22C55E,#16A34A)", display: "flex",
+                    alignItems: "center", justifyContent: "center", margin: "0 auto 14px",
+                    boxShadow: "0 8px 24px rgba(34,197,94,0.30)", animation: "bounce 0.8s infinite" }}>
+                    <IconUpload size={28} color="white" />
+                  </Box>
+                  <Text style={{ fontSize: "var(--font-size-lg)", fontWeight: 900, color: "#166534" }}>
+                    Thả file vào đây!</Text>
                 </>
               ) : (
                 <>
@@ -1161,11 +1322,13 @@ function FileProcessingPage() {
                     Tải lên & AI xử lý ngay</Text>
                   <Text style={{ fontSize: 13, color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
                     PDF, Word, Ảnh → Tóm tắt + Flashcard + Quiz trong 30 giây</Text>
-                  <Box style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
-                    {["PDF", "Word", "Ảnh"].map(t => (
+                  <Box style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12, flexWrap: "wrap" }}>
+                    {["PDF", "Word", "Ảnh", "Ctrl+V Paste"].map(t => (
                       <Box key={t} style={{ padding: "4px 12px", borderRadius: "var(--radius-full)",
-                        background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.15)",
-                        fontSize: 12, fontWeight: 700, color: "#3B82F6" }}>{t}</Box>
+                        background: t === "Ctrl+V Paste" ? "rgba(34,197,94,0.08)" : "rgba(59,130,246,0.08)",
+                        border: t === "Ctrl+V Paste" ? "1px solid rgba(34,197,94,0.2)" : "1px solid rgba(59,130,246,0.15)",
+                        fontSize: 12, fontWeight: 700,
+                        color: t === "Ctrl+V Paste" ? "#16A34A" : "#3B82F6" }}>{t}</Box>
                     ))}
                   </Box>
                 </>
@@ -1232,7 +1395,7 @@ function FileProcessingPage() {
                       <Box key={doc.id || idx} className="ch-card" style={{
                         padding: 14, cursor: "pointer",
                         border: isActive ? "2px solid var(--color-primary)" : "1px solid var(--color-border)",
-                      }} onClick={() => setActiveDoc(isActive ? null : doc)}>
+                      }} onClick={() => handleDocClick(doc)}>
                         <Box style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                           <Box className="ch-doc-icon" style={{ background: bgColor }}>
                             <IconDoc size={20} color={iconColor} />
@@ -1263,11 +1426,11 @@ function FileProcessingPage() {
                         <Box style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
                           {[
                             { label: "Tóm tắt", icon: <IconDoc size={20} color="#3B82F6" />, bg: "#EFF6FF",
-                              action: () => { setActiveDoc(doc); } },
+                              action: async () => { await handleDocClick(doc); } },
                             { label: "Flashcard", icon: <IconFlashcard size={20} color="#F59E0B" />, bg: "#FEF3C7",
-                              action: () => navigate("/flashcard") },
+                              action: () => navigate(`/flashcard?doc=${doc.id}`) },
                             { label: "Quiz", icon: <IconQuiz size={20} color="#8B5CF6" />, bg: "#F3E8FF",
-                              action: () => navigate("/quiz") },
+                              action: () => navigate(`/quiz?doc=${doc.id}`) },
                             { label: "Kho", icon: <IconFolder size={20} color="#22C55E" />, bg: "#DCFCE7",
                               action: () => navigate("/vault") },
                           ].map((a, i) => (
@@ -1369,6 +1532,68 @@ function FileProcessingPage() {
                 }}
               >
                 Xóa
+              </button>
+            </Box>
+          </Box>
+        </Box>
+      )}
+
+      {/* ── Rename Modal ── */}
+      {renameDoc && (
+        <Box style={{
+          position: "fixed", inset: 0,
+          background: "rgba(0,0,0,0.5)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 9999, padding: 20,
+        }}>
+          <Box style={{
+            width: "100%", maxWidth: 320,
+            background: "white", borderRadius: "var(--radius-xl)",
+            padding: "24px", boxShadow: "var(--shadow-xl)",
+            animation: "scaleIn 0.2s var(--ease-spring)",
+          }}>
+            <Text style={{ fontSize: 16, fontWeight: 800, color: "var(--color-text-primary)", marginBottom: 8 }}>
+              ✏️ Đổi tên tài liệu
+            </Text>
+            <Text style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+              Tên mới cho tài liệu:
+            </Text>
+            <input
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              autoFocus
+              style={{
+                width: "100%", padding: "12px 16px", borderRadius: "var(--radius-lg)",
+                border: "1.5px solid var(--color-border)", background: "var(--color-bg-subtle)",
+                fontSize: 15, fontFamily: "var(--font-family)", outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+            <Box style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button
+                onClick={() => { setRenameDoc(null); setNewName(""); }}
+                style={{
+                  flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
+                  background: "var(--color-bg-subtle)", border: "1px solid var(--color-border)",
+                  color: "var(--color-text-secondary)", fontWeight: 700, fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Hủy
+              </button>
+              <button
+                onClick={handleRename}
+                disabled={!newName.trim()}
+                style={{
+                  flex: 1, padding: "12px", borderRadius: "var(--radius-full)",
+                  background: newName.trim() ? "var(--gradient-primary)" : "var(--color-bg-subtle)",
+                  border: "none",
+                  color: newName.trim() ? "white" : "var(--color-text-tertiary)",
+                  fontWeight: 700, fontSize: 14,
+                  cursor: newName.trim() ? "pointer" : "not-allowed",
+                }}
+              >
+                Lưu
               </button>
             </Box>
           </Box>
