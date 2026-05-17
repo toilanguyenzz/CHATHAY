@@ -3889,7 +3889,6 @@ async def generate_quiz_from_solution(request: Request):
 
 
 
-
 # Include shared quiz router if available
 if shared_quiz_router:
     app.include_router(shared_quiz_router)
@@ -4194,7 +4193,8 @@ function loadExams() {
         var flashBadge = e.has_flashcards
           ? '<span class="badge badge-ok">' + e.flashcard_count + ' the</span>'
           : '<span class="badge badge-wait">⏳ Dang tao...</span>';
-        var date = e.created_at ? new Date(e.created_at).toLocaleDateString('vi-VN') : '--';
+        var date = e.created_at ? new Date(e.created_at * 1000).toLocaleDateString('vi-VN') : '--';
+        var safeName = (e.name || 'De thi').replace(/[\\\[\]'"]/g, '');
 
         rows += '<tr>'
           + '<td>' + (i+1) + '</td>'
@@ -4202,9 +4202,9 @@ function loadExams() {
           + '<td>' + quizBadge + '</td>'
           + '<td>' + flashBadge + '</td>'
           + '<td style="color:#64748B">' + date + '</td>'
-          + '<td><button onclick="deleteExam(\'' + e.id + '\', \'' + (e.name || '').replace(/'/g, '') + '\')" style="padding:4px 10px;border:1px solid #EF4444;border-radius:6px;background:transparent;color:#EF4444;font-size:11px;cursor:pointer;font-weight:700">🗑️ Xoa</button></td>'
+          + '<td><button onclick="deleteExam(\'' + e.id + '\', \'' + safeName + '\')" style="padding:4px 10px;border:1px solid #EF4444;border-radius:6px;background:transparent;color:#EF4444;font-size:11px;cursor:pointer;font-weight:700">🗑️ Xoa</button></td>'
           + '<td style="white-space:nowrap">'
-          + '<button onclick="renameExam(\'' + e.id + '\', \'' + (e.name || '').replace(/'/g, '') + '\')" style="padding:4px 8px;border:1px solid #F59E0B;border-radius:6px;background:transparent;color:#F59E0B;font-size:11px;cursor:pointer;font-weight:700;margin-right:4px">✏️</button>'
+          + '<button onclick="renameExam(\'' + e.id + '\', \'' + safeName + '\')" style="padding:4px 8px;border:1px solid #F59E0B;border-radius:6px;background:transparent;color:#F59E0B;font-size:11px;cursor:pointer;font-weight:700;margin-right:4px">✏️</button>'
           + '<button onclick="previewQuiz(\'' + e.id + '\')" style="padding:4px 8px;border:1px solid #10B981;border-radius:6px;background:transparent;color:#10B981;font-size:11px;cursor:pointer;font-weight:700">👁️</button>'
           + '</td>'
           + '</tr>';
