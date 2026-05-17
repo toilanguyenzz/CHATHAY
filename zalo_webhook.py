@@ -4373,6 +4373,8 @@ async def get_public_exams():
                 "id, name, doc_type, created_at, quiz_questions, flashcards"
             ).eq("user_id", ADMIN_USER_ID).order("created_at", desc=True).execute()
 
+            logger.info("Public exams query: found %s docs for user_id=%s", len(result.data or []), ADMIN_USER_ID)
+
             exams = []
             for doc in (result.data or []):
                 quiz_qs = doc.get("quiz_questions") or []
@@ -4389,10 +4391,40 @@ async def get_public_exams():
                 })
             return JSONResponse(content=exams)
 
+        logger.warning("Public exams: supabase client is None!")
         return JSONResponse(content=[])
     except Exception as exc:
         logger.error("Get public exams error: %s", exc, exc_info=True)
-        return JSONResponse(content=[], status_code=200)
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/admin/debug-docs")
+async def admin_debug_docs(key: str = ""):
+    """Debug: check what documents exist for admin user."""
+    if key != ADMIN_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
+    try:
+        if not supabase:
+            return JSONResponse(content={"error": "No supabase"})
+
+        # Check ALL documents for admin user
+        result = supabase.table("documents").select(
+            "id, user_id, name, doc_type, created_at"
+        ).eq("user_id", ADMIN_USER_ID).execute()
+
+        # Also check recent documents from ANY user to see if insert worked
+        recent = supabase.table("documents").select(
+            "id, user_id, name, created_at"
+        ).order("created_at", desc=True).limit(5).execute()
+
+        return JSONResponse(content={
+            "admin_user_id": ADMIN_USER_ID,
+            "admin_docs_count": len(result.data or []),
+            "admin_docs": result.data or [],
+            "recent_5_docs": recent.data or [],
+        })
+    except Exception as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
 if __name__ == "__main__":
