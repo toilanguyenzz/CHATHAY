@@ -61,9 +61,16 @@ async def create_shared_quiz(request: Request):
 
         # If no questions provided, generate from document
         if not questions and doc_id:
-            # TODO: Call AI to generate questions from document
-            # For now, return error
-            return JSONResponse(content={"error": "Questions required or doc_id for AI generation"}, status_code=400)
+            # Get quiz questions from documents table
+            doc_result = supabase.table("documents").select("quiz_questions").eq("id", doc_id).eq("user_id", user_id).execute()
+            if doc_result.data and doc_result.data[0].get("quiz_questions"):
+                questions = doc_result.data[0]["quiz_questions"]
+                logger.info(f"✅ Loaded {len(questions)} quiz questions from document {doc_id}")
+            else:
+                return JSONResponse(content={"error": "Không tìm thấy câu hỏi quiz cho tài liệu này"}, status_code=400)
+
+        if not questions:
+            return JSONResponse(content={"error": "Chưa có câu hỏi quiz"}, status_code=400)
 
         # Insert into shared_quizzes
         result = supabase.table("shared_quizzes").insert({
@@ -191,21 +198,20 @@ async def start_shared_quiz(share_code: str, request: Request):
 async def submit_shared_quiz(share_code: str, request: Request):
     """
     Student submits quiz answers.
-    Requires authentication.
-    Saves attempt with REAL Zalo name.
+    No login required - uses student_name and student_phone.
+    Saves attempt with student info.
     """
     try:
         body = await request.json()
-        user_id = body.get("user_id") or request.headers.get("X-User-Id", "")
-        display_name = body.get("display_name", "")  # Real Zalo name
-        avatar_url = body.get("avatar_url", "")
-        answers = body.get("answers", [])  # [{question_index, selected_option, time_spent}]
+        student_name = body.get("student_name", "")
+        student_phone = body.get("student_phone", "")
+        answers = body.get("answers", [])
 
-        if not user_id:
-            return JSONResponse(content={"error": "Authentication required"}, status_code=401)
+        if not student_name or not student_phone:
+            return JSONResponse(content={"error": "Thiếu thông tin học sinh"}, status_code=400)
 
         if not answers:
-            return JSONResponse(content={"error": "No answers provided"}, status_code=400)
+            return JSONResponse(content={"error": "Không có câu trả lời"}, status_code=400)
 
         supabase = get_supabase_client()
         if not supabase:
@@ -215,7 +221,7 @@ async def submit_shared_quiz(share_code: str, request: Request):
         quiz_result = supabase.table("shared_quizzes").select("*").eq("share_code", share_code).eq("is_active", True).single().execute()
 
         if not quiz_result.data:
-            return JSONResponse(content={"error": "Quiz not found or inactive"}, status_code=404)
+            return JSONResponse(content={"error": "Quiz không tồn tại"}, status_code=404)
 
         quiz = quiz_result.data
         questions = quiz["questions"]
@@ -246,41 +252,17 @@ async def submit_shared_quiz(share_code: str, request: Request):
 
         percentage = (score / total * 100) if total > 0 else 0
 
-        # Get user's display name from user_profiles (or use provided)
-        try:
-            user_profile = supabase.table("user_profiles").select("display_name, avatar_url").eq("user_id", user_id).execute()
-            if user_profile.data and len(user_profile.data) > 0:
-                display_name = display_name or user_profile.data[0].get("display_name", "")
-                avatar_url = avatar_url or user_profile.data[0].get("avatar_url", "")
-        except Exception as e:
-            logger.warning(f"Could not get user profile: {e}")
-
         # Save attempt
         attempt_id = str(uuid.uuid4())
         supabase.table("quiz_attempts").insert({
             "id": attempt_id,
             "quiz_id": quiz["id"],
-            "user_id": user_id,
-            "display_name": display_name,
-            "avatar_url": avatar_url,
+            "student_name": student_name,
+            "student_phone": student_phone,
             "score": score,
             "total_questions": total,
             "percentage": percentage,
-            "time_seconds": sum(a.get("time_spent", 0) for a in answers),
             "answers": detailed_answers,
-            "attempt_number": len(answers) + 1,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-
-        # Also save to quiz_scores for backward compatibility
-        supabase.table("quiz_scores").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "doc_id": quiz.get("doc_id") or f"shared_{quiz['id']}",
-            "quiz_id": quiz["id"],
-            "shared_quiz_id": quiz["id"],
-            "score": score,
-            "total_questions": total,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
@@ -344,15 +326,12 @@ async def get_teacher_quiz_results(quiz_id: str, request: Request):
             "average_percentage": round(avg_percentage, 2),
             "results": [
                 {
-                    "user_id": r["user_id"],
-                    "display_name": r["display_name"],
-                    "avatar_url": r["avatar_url"],
+                    "student_name": r.get("student_name", r.get("display_name", "")),
+                    "student_phone": r.get("student_phone", ""),
                     "score": r["score"],
                     "total": r["total_questions"],
                     "percentage": r["percentage"],
-                    "time_seconds": r.get("time_seconds", 0),
                     "completed_at": r["completed_at"],
-                    "attempt_number": r.get("attempt_number", 1),
                 }
                 for r in results
             ],
