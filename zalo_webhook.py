@@ -1441,6 +1441,11 @@ app.add_middleware(
 )
 app.mount("/audio", StaticFiles(directory=config.AUDIO_DIR), name="audio")
 
+# Include shared quiz router
+if shared_quiz_router:
+    app.include_router(shared_quiz_router)
+    logger.info("✅ Shared Quiz router registered")
+
 HOMEPAGE_HTML = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
