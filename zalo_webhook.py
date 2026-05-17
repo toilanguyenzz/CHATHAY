@@ -4038,10 +4038,11 @@ select { width:100%; padding:12px 16px; border:1.5px solid #334155; border-radiu
         <th>Quiz</th>
         <th>Flashcard</th>
         <th>Ngay tao</th>
+        <th>Xoa</th>
       </tr>
     </thead>
     <tbody id="examBody">
-      <tr><td colspan="5" style="text-align:center;color:#64748B;padding:24px">Dang tai...</td></tr>
+      <tr><td colspan="6" style="text-align:center;color:#64748B;padding:24px">Dang tai...</td></tr>
     </tbody>
   </table>
 </div>
@@ -4171,7 +4172,7 @@ function loadExams() {
       // Update table
       var tbody = document.getElementById('examBody');
       if (exams.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#64748B;padding:24px">Chua co de thi nao. Hay upload file o tren!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#64748B;padding:24px">Chua co de thi nao. Hay upload file o tren!</td></tr>';
         return;
       }
 
@@ -4188,10 +4189,11 @@ function loadExams() {
 
         rows += '<tr>'
           + '<td>' + (i+1) + '</td>'
-          + '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (e.name || 'De thi') + '</td>'
+          + '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (e.name || 'De thi') + '</td>'
           + '<td>' + quizBadge + '</td>'
           + '<td>' + flashBadge + '</td>'
           + '<td style="color:#64748B">' + date + '</td>'
+          + '<td><button onclick="deleteExam(\'' + e.id + '\', \'' + (e.name || '').replace(/'/g, '') + '\')" style="padding:4px 10px;border:1px solid #EF4444;border-radius:6px;background:transparent;color:#EF4444;font-size:11px;cursor:pointer;font-weight:700">🗑️ Xoa</button></td>'
           + '</tr>';
       }
       tbody.innerHTML = rows;
@@ -4201,12 +4203,46 @@ function loadExams() {
     });
 }
 
+// === DELETE EXAM ===
+function deleteExam(id, name) {
+  if (!confirm('Ban co chac muon XOA de thi:\n"' + name + '"?\n\nHanh dong nay KHONG the hoan tac!')) return;
+  fetch('/api/admin/exams/' + id + '?key=' + API_KEY, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        alert('Da xoa thanh cong!');
+        loadExams();
+      } else {
+        alert('Loi: ' + (data.error || 'Unknown'));
+      }
+    })
+    .catch(function(err) { alert('Loi: ' + err.message); });
+}
+
 // Load on page start
 loadExams();
 </script>
 </body>
 </html>"""
     return HTMLResponse(html)
+
+
+@app.delete("/api/admin/exams/{doc_id}")
+async def admin_delete_exam(doc_id: str, key: str = ""):
+    """Admin: delete an exam from the public library."""
+    if key != ADMIN_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
+    try:
+        if not supabase:
+            return JSONResponse(content={"error": "No database"}, status_code=500)
+
+        # Only allow deleting admin docs
+        result = supabase.table("documents").delete().eq("id", doc_id).eq("user_id", ADMIN_USER_ID).execute()
+        logger.info("Admin deleted exam %s", doc_id)
+        return JSONResponse(content={"ok": True, "deleted": doc_id})
+    except Exception as exc:
+        logger.error("Delete exam error: %s", exc)
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
 @app.post("/api/admin/bulk-upload")
