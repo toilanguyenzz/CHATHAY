@@ -1,36 +1,77 @@
 """Prompts for Study Mode — Quiz, Flashcard, Summary"""
 
 GENERATE_QUIZ_PROMPT = """
-Từ đề thi/bài giảng sau, tạo câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D).
+Từ đề thi/bài giảng sau, tạo câu hỏi quiz ĐẦY ĐỦ.
 
 ⚠️ QUY TẮC SỐ LƯỢNG CÂU HỎI:
 - Nếu tài liệu là ĐỀ THI có sẵn câu hỏi → TRÍCH XUẤT Y NGUYÊN TẤT CẢ câu hỏi trong đề. KHÔNG giới hạn số lượng.
 - Nếu tài liệu là BÀI GIẢNG/TÀI LIỆU HỌC → Tự tạo câu hỏi, tỷ lệ ~1 câu/200 từ nội dung (tối thiểu 5, tối đa 50).
 - KHÔNG cắt bớt câu hỏi. Nếu đề thi có 40 câu thì output PHẢI có 40 câu.
 
+⚠️ NHẬN DẠNG FORMAT ĐỀ THI THPT QUỐC GIA:
+Đề thi THPT hiện có 3 dạng chính. Hãy NHẬN DIỆN và xử lý ĐÚNG từng dạng:
+
+**DẠNG 1: Trắc nghiệm thuần túy (A/B/C/D)**
+- Câu hỏi + 4 đáp án A, B, C, D → chọn 1 đáp án đúng
+- Format: type = "multiple_choice"
+
+**DẠNG 2: Trắc nghiệm Đúng/Sai có đoạn dữ liệu**
+- Có 1 đoạn dữ liệu/bảng/biểu đồ + 4 phát biểu (a, b, c, d)
+- Mỗi phát biểu cần đánh giá ĐÚNG hoặc SAI
+- Format: type = "true_false_group"
+- Dấu hiệu nhận diện: "Đúng hay Sai?", "Xét các phát biểu", "a)", "b)", "c)", "d)" sau 1 đoạn ngữ cảnh
+
+**DẠNG 3: Trả lời ngắn**
+- Yêu cầu điền đáp án (số, từ, cụm từ)
+- Format: type = "fill_in"
+
 Yêu cầu:
-1. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất, phân bổ đều các chương/mục
-2. **Độ khó:** 60% dễ (kiến thức cơ bản), 30% trung bình (ứng dụng), 10% khó (tổng hợp)
-3. **Cấu trúc câu hỏi:**
-   - Rõ ràng, không ambiguous
-   - Distractors (đáp án sai) phải hợp lý (common misconceptions)
-   - Tránh "all of the above" hoặc "none of the above"
-4. **Giải thích:** Mỗi câu có giải thích ngắn (1-2 câu) tại sao đáp án đúng
-5. **Ngôn ngữ:** Dùng tiếng Việt, ngữ cảnh phù hợp với học sinh Việt Nam
-6. **Đáp án:** Nếu đề thi đã đánh dấu đáp án (in đậm, bôi màu, khoanh tròn, ghi [ĐÁP ÁN: ...]) → giữ nguyên đáp án đó.
+1. **Phủ coverage:** Câu hỏi phải bao phủ các khái niệm QUAN TRỌNG nhất
+2. **Giải thích:** Mỗi câu có giải thích ngắn (1-2 câu) tại sao đáp án đúng
+3. **Ngôn ngữ:** Dùng tiếng Việt, ngữ cảnh phù hợp với học sinh Việt Nam
+4. **Đáp án:** Nếu đề thi đã đánh dấu đáp án → giữ nguyên đáp án đó
 
 Output JSON (CHÍNH XÁC, không markdown):
 {{
   "questions": [
     {{
-      "question": "Câu hỏi ở đây?",
+      "type": "multiple_choice",
+      "question": "Câu hỏi?",
       "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
-      "correct": 0,  // index 0-3 tương ứng A,B,C,D
-      "explanation": "Giải thích ngắn gọn tại sao đáp án đúng",
+      "correct": 0,
+      "explanation": "Giải thích",
       "difficulty": "easy|medium|hard"
+    }},
+    {{
+      "type": "true_false_group",
+      "question": "Đoạn dữ liệu + câu hỏi gốc",
+      "context": "Đoạn ngữ cảnh/dữ liệu dùng chung cho các phát biểu",
+      "statements": [
+        {{"text": "Phát biểu a)", "answer": true}},
+        {{"text": "Phát biểu b)", "answer": false}},
+        {{"text": "Phát biểu c)", "answer": true}},
+        {{"text": "Phát biểu d)", "answer": false}}
+      ],
+      "options": ["A. Đúng", "B. Sai", "C. Đúng", "D. Sai"],
+      "correct": 0,
+      "explanation": "Giải thích",
+      "difficulty": "medium"
+    }},
+    {{
+      "type": "fill_in",
+      "question": "Câu hỏi điền đáp án?",
+      "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+      "correct": 0,
+      "explanation": "Giải thích",
+      "difficulty": "hard"
     }}
   ]
 }}
+
+LƯU Ý QUAN TRỌNG:
+- Tất cả các dạng ĐỀU phải có trường "options" 4 lựa chọn (A/B/C/D) và "correct" (0-3) để tương thích quiz UI.
+- Với dạng Đúng/Sai: chuyển thành 4 đáp án (VD: "A. a-Đúng, b-Sai, c-Đúng, d-Đúng") để học sinh chọn combo đúng.
+- Với dạng Fill-in: chuyển thành trắc nghiệm bằng cách đặt đáp án đúng + 3 đáp án nhiễu.
 
 Tài liệu:
 ---
