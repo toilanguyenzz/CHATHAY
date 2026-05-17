@@ -39,6 +39,7 @@ function HubPage() {
   const [streak, setStreak] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [publicExams, setPublicExams] = useState<any[]>([]);
 
   const loadData = () => {
     if (!user_id) { setLoading(false); return; }
@@ -48,10 +49,12 @@ function HubPage() {
       coinService.getBalance().catch(() => ({ balance: 0 })),
       documentService.getDocuments().catch(() => []),
       studyService.getStreak().catch(() => ({ current_streak: 0 })),
-    ]).then(([coin, docs, str]) => {
+      documentService.getPublicExams().catch(() => []),
+    ]).then(([coin, docs, str, exams]) => {
       setCoinBalance(coin.balance || 0);
       setDocCount(Array.isArray(docs) ? docs.length : 0);
       setStreak(str.current_streak || 0);
+      setPublicExams(Array.isArray(exams) ? exams : []);
       setLoading(false);
     }).catch(() => { setError(true); setLoading(false); });
   };
@@ -280,6 +283,66 @@ function HubPage() {
                   </Box>
                 ))}
               </Box>
+            </Box>
+
+            {/* ═══ KHO ĐỀ THI ═══ */}
+            <Box>
+              <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, paddingLeft: 4 }}>
+                <Text style={{ fontSize: 13, fontWeight: 800, color: "#6B7280", letterSpacing: "0.06em" }}>
+                  📚 KHO ĐỀ THI
+                </Text>
+                <Box onClick={() => navigate("/file-processing")} style={{
+                  padding: "4px 12px", borderRadius: 12,
+                  background: "#EEF2FF", cursor: "pointer",
+                }}>
+                  <Text style={{ fontSize: 11, fontWeight: 700, color: "#6366F1" }}>Xem tất cả →</Text>
+                </Box>
+              </Box>
+              {publicExams.length > 0 ? (
+                <Box style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {publicExams.filter((e: any) => e.has_quiz).slice(0, 5).map((exam: any) => (
+                    <Box key={exam.id} onClick={() => navigate(`/quiz?doc_id=${exam.id}`)} style={{
+                      padding: "14px 16px", borderRadius: 16,
+                      background: "white", border: "1px solid #E5E7EB",
+                      boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                      display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}>
+                      <Box style={{
+                        width: 42, height: 42, borderRadius: 12,
+                        background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        flexShrink: 0,
+                      }}>
+                        <Text style={{ fontSize: 20 }}>📝</Text>
+                      </Box>
+                      <Box style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{
+                          fontSize: 13, fontWeight: 700, color: "#1F2937",
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>{exam.name}</Text>
+                        <Text style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
+                          {exam.quiz_count} câu quiz • {exam.flashcard_count} flashcard
+                        </Text>
+                      </Box>
+                      <Box style={{
+                        padding: "6px 14px", borderRadius: 20,
+                        background: "linear-gradient(135deg, #8B5CF6, #7C3AED)",
+                        color: "white", fontSize: 11, fontWeight: 800,
+                        flexShrink: 0,
+                      }}>Làm bài</Box>
+                    </Box>
+                  ))}
+                </Box>
+              ) : (
+                <Box style={{
+                  padding: 20, textAlign: "center", borderRadius: 16,
+                  background: "white", border: "1px solid #E5E7EB",
+                }}>
+                  <Text style={{ fontSize: 28, marginBottom: 6 }}>📭</Text>
+                  <Text style={{ fontSize: 13, fontWeight: 700, color: "#6B7280" }}>Đang cập nhật đề thi...</Text>
+                </Box>
+              )}
             </Box>
 
             {/* ═══ TIP ═══ */}

@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { IconUpload, IconCamera, IconImage } from "../components/icons";
 
 interface FileUploadSectionProps {
-  onFileSelect: (file: File, studentMode?: boolean) => Promise<void>;
+  onFileSelect: (file: File, mode?: "summary" | "quiz" | "flashcard" | "both") => Promise<void>;
   uploading: boolean;
   uploadProgress: string;
 }
@@ -13,27 +13,27 @@ export function FileUploadSection({ onFileSelect, uploading, uploadProgress }: F
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
-  const studentModeRef = useRef<HTMLInputElement>(null);
+  const modeRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const studentMode = studentModeRef.current?.checked || false;
-    onFileSelect(file, studentMode);
+    const mode = modeRef.current?.value || "both";
+    onFileSelect(file, mode as any);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleCameraSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    onFileSelect(file, true); // student mode = true for camera
+    onFileSelect(file, "quiz"); // camera → quiz fast path
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
 
   const handleGallerySelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    onFileSelect(file, false);
+    onFileSelect(file, "quiz"); // gallery → quiz fast path
     if (galleryInputRef.current) galleryInputRef.current.value = "";
   };
 
@@ -62,38 +62,47 @@ export function FileUploadSection({ onFileSelect, uploading, uploadProgress }: F
         onChange={handleGallerySelect}
         style={{ display: "none" }}
       />
-      {/* Hidden student mode checkbox */}
-      <input ref={studentModeRef} type="checkbox" style={{ display: "none" }} defaultChecked />
+      {/* Hidden mode selector */}
+      <input ref={modeRef} type="hidden" value="both" />
 
       {/* Quick Actions: Camera & Album - ONE CLICK TO QUIZ */}
-      <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
         <Box
           className="ch-btn-primary"
           onClick={() => {
-            studentModeRef.current!.checked = true;
+            modeRef.current!.value = "quiz";
             cameraInputRef.current?.click();
           }}
-          style={{ padding: "14px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#10B981,#059669)", border: "none" }}
+          style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#10B981,#059669)", border: "none" }}
         >
-          <IconCamera size={24} color="white" />
-          <Text style={{ fontSize: 12, fontWeight: 700 }}>📸 Chụp → Làm Quiz</Text>
-          <Text style={{ fontSize: 10, color: "rgba(255,255,255,0.85)", fontWeight: 600 }}>Tự động vào Quiz</Text>
+          <IconCamera size={22} color="white" />
+          <Text style={{ fontSize: 11, fontWeight: 700 }}>📸 Quiz</Text>
         </Box>
         <Box
           className="ch-btn-secondary"
           onClick={() => {
-            studentModeRef.current!.checked = true;
+            modeRef.current!.value = "quiz";
             galleryInputRef.current?.click();
           }}
-          style={{ padding: "14px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#8B5CF6,#7C3AED)", border: "none" }}
+          style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#8B5CF6,#7C3AED)", border: "none" }}
         >
-          <IconImage size={24} color="white" />
-          <Text style={{ fontSize: 12, fontWeight: 700 }}>🖼️ Chọn → Làm Quiz</Text>
-          <Text style={{ fontSize: 10, color: "rgba(255,255,255,0.85)", fontWeight: 600 }}>Tự động vào Quiz</Text>
+          <IconImage size={22} color="white" />
+          <Text style={{ fontSize: 11, fontWeight: 700 }}>🖼️ Quiz</Text>
+        </Box>
+        <Box
+          className="ch-btn-secondary"
+          onClick={() => {
+            modeRef.current!.value = "flashcard";
+            fileInputRef.current?.click();
+          }}
+          style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#F59E0B,#D97706)", border: "none" }}
+        >
+          <span style={{ fontSize: 22 }}>📇</span>
+          <Text style={{ fontSize: 11, fontWeight: 700 }}>Flashcard</Text>
         </Box>
       </Box>
 
-      {/* Upload Zone */}
+      {/* Upload Zone - Full Upload (Summary + Quiz + Flashcard) */}
       <Box
         className="ch-card"
         style={{
@@ -104,7 +113,12 @@ export function FileUploadSection({ onFileSelect, uploading, uploadProgress }: F
           background: uploading ? "linear-gradient(135deg,#F3E8FF,#EDE9FE)" : "linear-gradient(135deg,#EFF6FF,#DBEAFE)",
           cursor: uploading ? "wait" : "pointer",
         }}
-        onClick={() => !uploading && fileInputRef.current?.click()}
+        onClick={() => {
+          if (!uploading) {
+            modeRef.current!.value = "both";
+            fileInputRef.current?.click();
+          }
+        }}
       >
         {uploading ? (
           <>
@@ -145,7 +159,7 @@ export function FileUploadSection({ onFileSelect, uploading, uploadProgress }: F
               Tải lên & AI xử lý ngay
             </Text>
             <Text style={{ fontSize: 13, color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
-              PDF, Word, Ảnh → Tóm tắt + Flashcard + Quiz trong 30 giây
+              PDF, Word → Tóm tắt + Flashcard + Quiz
             </Text>
             <Box style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
               {["PDF", "Word", "Ảnh"].map((t) => (

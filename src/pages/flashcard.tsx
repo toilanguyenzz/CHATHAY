@@ -61,21 +61,10 @@ function FlashcardPage() {
     } else {
       const loadFlashcards = async () => {
         try {
+          // Direct fetch - backend handles lazy generation
           let data = await documentService.getFlashcards(id);
-          
-          // If empty, trigger generation via startFlashcard and refetch
-          if (!data || data.length === 0) {
-            try {
-              const session = await studyService.startFlashcard(id);
-              if (session?.session_id) {
-                setSessionId(session.session_id);
-              }
-              data = await documentService.getFlashcards(id);
-            } catch (err) {
-              console.warn("Flashcard generation failed:", err);
-            }
-          }
-          
+
+          // If still empty after lazy gen attempt, show empty state
           setCards(data || []);
         } catch (err) {
           setCards([]);
@@ -83,7 +72,7 @@ function FlashcardPage() {
           setLoading(false);
         }
       };
-      
+
       loadFlashcards();
     }
   }, [user_id, docId]);

@@ -197,7 +197,7 @@ function FileProcessingPage() {
   }, [sharedFile, user_id, clearSharedFile, loadData]);
 
   // Upload file with optimization
-  const uploadFile = async (file: File, studentMode: boolean = false) => {
+  const uploadFile = async (file: File, mode: "summary" | "quiz" | "flashcard" | "both" = "summary") => {
     const validExts = [".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp"];
     const ext = file.name.toLowerCase().substring(file.name.lastIndexOf("."));
     if (!validExts.includes(ext)) {
@@ -217,26 +217,10 @@ function FileProcessingPage() {
 
     setUploading(true);
 
-    if (studentMode) {
-      // ⚡ FAST PATH: Skip summarization, go straight to Quiz/Flashcard
-      setUploadProgress("⚡ Đang trích xuất nội dung...");
-      try {
-        const result = await documentService.fastUpload(uploadFileData, "quiz");
-        setToast({ message: "✅ Sẵn sàng! Đang tạo Quiz...", type: "success" });
-        loadData();
-        // Navigate to quiz with the doc_id
-        setTimeout(() => navigate(`/quiz?doc_id=${result.id}`), 500);
-      } catch (err: any) {
-        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
-      } finally {
-        setUploading(false);
-        setUploadProgress("");
-      }
-    } else {
+    if (mode === "summary") {
       // Normal path: full summarization
       setUploadProgress("🚀 Đang tải lên & AI tóm tắt...");
       try {
-        // Check cache
         const fileHash = await generateFileHash(file);
         const cacheKey = `file_${fileHash}`;
         if (fileCache.has(cacheKey)) {
@@ -258,6 +242,48 @@ function FileProcessingPage() {
         setActiveDoc(result);
         setToast({ message: "✅ Xử lý thành công!", type: "success" });
         loadData();
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
+    } else if (mode === "quiz") {
+      // ⚡ Quiz fast path
+      setUploadProgress("⚡ Đang tạo Quiz...");
+      try {
+        const result = await documentService.fastUpload(uploadFileData, "quiz");
+        setToast({ message: "✅ Quiz đã sẵn sàng!", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/quiz?doc_id=${result.id}`), 500);
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
+    } else if (mode === "flashcard") {
+      // ⚡ Flashcard fast path
+      setUploadProgress("⚡ Đang tạo Flashcard...");
+      try {
+        const result = await documentService.fastUpload(uploadFileData, "flashcard");
+        setToast({ message: "✅ Flashcard đã sẵn sàng!", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/flashcard?docId=${result.id}`), 500);
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
+    } else if (mode === "both") {
+      // 🚀 Both Quiz + Flashcard (parallel)
+      setUploadProgress("🚀 Đang chuẩn bị Quiz & Flashcard...");
+      try {
+        const result = await documentService.fastUpload(uploadFileData, "both");
+        setToast({ message: "✅ Sẵn sàng! Đang vào Flashcard...", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/flashcard?docId=${result.id}`), 500);
       } catch (err: any) {
         setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
       } finally {
@@ -332,20 +358,30 @@ function FileProcessingPage() {
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
-      uploadFile(file);
+      uploadFile(file, "both"); // Default to "both" mode (summary + flashcard + quiz)
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [uploadFile, navigate]
+    [uploadFile]
   );
 
   const handleCameraSelect = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
-      uploadFile(file, true); // studentMode = true → auto redirect to Quiz
+      uploadFile(file, "quiz"); // Camera → Quiz fast path
       if (cameraInputRef.current) cameraInputRef.current.value = "";
     },
-    [uploadFile, navigate]
+    [uploadFile]
+  );
+
+  const handleGallerySelect = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      uploadFile(file, "quiz"); // Gallery → Quiz fast path
+      if (galleryInputRef.current) galleryInputRef.current.value = "";
+    },
+    [uploadFile]
   );
 
   const handleSolveCamera = useCallback(

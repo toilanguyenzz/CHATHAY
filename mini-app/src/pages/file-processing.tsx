@@ -65,9 +65,9 @@ function FileProcessingPage() {
         if (file) {
           const url = URL.createObjectURL(file);
           setPastedImage(url);
-          // Auto upload after 800ms
+          // Auto upload after 800ms - Quiz mode for pasted images
           setTimeout(async () => {
-            await uploadFile(file, true);
+            await uploadFile(file, "quiz");
             setPastedImage(null);
           }, 800);
         }
@@ -102,26 +102,26 @@ function FileProcessingPage() {
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    await uploadFile(file);
+    await uploadFile(file, "both");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleCameraSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    await uploadFile(file, true); // true = isStudentMode (auto-generate quiz)
+    await uploadFile(file, "quiz"); // Camera → Quiz fast path
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
 
   const handleGallerySelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    await uploadFile(file, false);
+    await uploadFile(file, "quiz"); // Gallery → Quiz fast path
     if (galleryInputRef.current) galleryInputRef.current.value = "";
   };
 
   /* ─── Upload File Logic ─── */
-  const uploadFile = async (file: File, studentMode: boolean = false) => {
+  const uploadFile = async (file: File, mode: "summary" | "quiz" | "flashcard" | "both" = "both") => {
     const validExts = [".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp"];
     const ext = file.name.toLowerCase().substring(file.name.lastIndexOf("."));
     if (!validExts.includes(ext)) {
@@ -132,24 +132,65 @@ function FileProcessingPage() {
       setToast({ message: "File quá lớn! Tối đa 10MB", type: "error" });
       return;
     }
+
     setUploading(true);
-    setUploadProgress("AI đang đọc & phân tích...");
-    try {
-      const result = await documentService.uploadAndProcess(file);
-      setToast({ message: "✅ Xử lý thành công!", type: "success" });
-      setActiveDoc(result);
-      // Nếu là student mode (chụp SGK), tự động chuyển sang tab quiz
-      if (studentMode) {
-        setTimeout(() => {
-          navigate("/quiz");
-        }, 1000);
+
+    if (mode === "summary") {
+      // Full summarization mode
+      setUploadProgress("AI đang đọc & phân tích...");
+      try {
+        const result = await documentService.uploadAndProcess(file);
+        setToast({ message: "✅ Xử lý thành công!", type: "success" });
+        setActiveDoc(result);
+        loadData();
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
       }
-      loadData();
-    } catch (err: any) {
-      setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
-    } finally {
-      setUploading(false);
-      setUploadProgress("");
+    } else if (mode === "quiz") {
+      // Fast Quiz mode
+      setUploadProgress("⚡ Đang tạo Quiz...");
+      try {
+        const result = await documentService.fastUpload(file, "quiz");
+        setToast({ message: "✅ Quiz đã sẵn sàng!", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/quiz?doc_id=${result.id}`), 500);
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
+    } else if (mode === "flashcard") {
+      // Fast Flashcard mode
+      setUploadProgress("⚡ Đang tạo Flashcard...");
+      try {
+        const result = await documentService.fastUpload(file, "flashcard");
+        setToast({ message: "✅ Flashcard đã sẵn sàng!", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/flashcard?docId=${result.id}`), 500);
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
+    } else {
+      // Both Quiz + Flashcard mode (default)
+      setUploadProgress("🚀 Đang chuẩn bị Quiz & Flashcard...");
+      try {
+        const result = await documentService.fastUpload(file, "both");
+        setToast({ message: "✅ Sẵn sàng! Đang vào Flashcard...", type: "success" });
+        loadData();
+        setTimeout(() => navigate(`/flashcard?docId=${result.id}`), 500);
+      } catch (err: any) {
+        setToast({ message: err.message || "Lỗi xử lý file", type: "error" });
+      } finally {
+        setUploading(false);
+        setUploadProgress("");
+      }
     }
   };
 
@@ -476,23 +517,40 @@ function FileProcessingPage() {
           </Box>
         </Box>
 
-        {/* ══════ QUICK ACTIONS: CAMERA & ALBUM ══════ */}
-        <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {/* ══════ QUICK ACTIONS: CAMERA, ALBUM & FLASHCARD ══════ */}
+        <Box style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
           <Box
             className="ch-btn-primary"
-            onClick={() => cameraInputRef.current?.click()}
-            style={{ padding: "14px", justifyContent: "center", flexDirection: "column", gap: 4 }}
+            onClick={() => {
+              // Camera → Quiz
+              cameraInputRef.current?.click();
+            }}
+            style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#10B981,#059669)", border: "none" }}
           >
-            <IconCamera size={24} color="white" />
-            <Text style={{ fontSize: 12, fontWeight: 700 }}>📸 Chụp ảnh</Text>
+            <IconCamera size={22} color="white" />
+            <Text style={{ fontSize: 11, fontWeight: 700 }}>📸 Quiz</Text>
           </Box>
           <Box
             className="ch-btn-secondary"
-            onClick={() => galleryInputRef.current?.click()}
-            style={{ padding: "14px", justifyContent: "center", flexDirection: "column", gap: 4 }}
+            onClick={() => {
+              // Gallery → Quiz
+              galleryInputRef.current?.click();
+            }}
+            style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#8B5CF6,#7C3AED)", border: "none" }}
           >
-            <IconImage size={24} color="var(--color-primary)" />
-            <Text style={{ fontSize: 12, fontWeight: 700 }}>🖼️ Chọn ảnh</Text>
+            <IconImage size={22} color="white" />
+            <Text style={{ fontSize: 11, fontWeight: 700 }}>🖼️ Quiz</Text>
+          </Box>
+          <Box
+            className="ch-btn-secondary"
+            onClick={() => {
+              // Upload file → Flashcard
+              fileInputRef.current?.click();
+            }}
+            style={{ padding: "12px", justifyContent: "center", flexDirection: "column", gap: 4, background: "linear-gradient(135deg,#F59E0B,#D97706)", border: "none" }}
+          >
+            <span style={{ fontSize: 22 }}>📇</span>
+            <Text style={{ fontSize: 11, fontWeight: 700 }}>Flashcard</Text>
           </Box>
         </Box>
 
@@ -828,6 +886,7 @@ function FileProcessingPage() {
               cursor: uploading ? "wait" : "pointer",
             }} onClick={() => {
               if (!uploading && shareStatus !== "error") {
+                // Default upload mode: both (Quiz + Flashcard)
                 fileInputRef.current?.click();
               } else if (shareStatus === "error" && sharedFile) {
                 // Retry processing the shared file
@@ -874,7 +933,7 @@ function FileProcessingPage() {
                   <Text style={{ fontSize: "var(--font-size-lg)", fontWeight: 900, color: "#1D4ED8", marginBottom: 4 }}>
                     Tải lên & AI xử lý ngay</Text>
                   <Text style={{ fontSize: 13, color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
-                    PDF, Word, Ảnh → Tóm tắt + Flashcard + Quiz trong 30 giây</Text>
+                    PDF, Word → Tóm tắt + Flashcard + Quiz</Text>
                   <Box style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
                     {["PDF", "Word", "Ảnh"].map(t => (
                       <Box key={t} style={{ padding: "4px 12px", borderRadius: "var(--radius-full)",
