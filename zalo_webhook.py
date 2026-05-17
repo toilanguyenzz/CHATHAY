@@ -3993,8 +3993,9 @@ document.getElementById('pp').textContent=p+'%';document.getElementById('pt').te
 if(r.ok)lg.innerHTML+='<div class="s">OK '+f.name+' -> text:'+j.text_length+'chars (Quiz generating in background...)</div>';
 else lg.innerHTML+='<div class="e">ERR '+f.name+': '+j.error+'</div>'}
 catch(e){d++;lg.innerHTML+='<div class="e">ERR '+f.name+': '+e.message+'</div>'}lg.scrollTop=lg.scrollHeight}
-document.getElementById('pt').textContent='Done!';document.getElementById('ub').disabled=false;
-setTimeout(()=>location.reload(),2000)}
+document.getElementById('pt').textContent='✅ Xong! '+d+'/'+t+' file da upload. Quiz dang duoc tao (doi ~30s roi F5 de xem).';
+document.getElementById('ub').disabled=false;document.getElementById('ub').textContent='🔄 Tai lai trang';
+document.getElementById('ub').onclick=()=>location.reload()}
 </script></body></html>"""
     return HTMLResponse(html)
 
