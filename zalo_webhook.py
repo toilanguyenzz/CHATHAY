@@ -3974,7 +3974,7 @@ let a=Array.isArray(d)?d:[];document.getElementById('te').textContent=a.length;
 document.getElementById('tq').textContent=a.filter(e=>e.has_quiz).length;
 document.getElementById('tf').textContent=a.filter(e=>e.has_flashcards).length}).catch(()=>{});
 function hf(f){F=Array.from(f);document.getElementById('fl').innerHTML=F.map((x,i)=>
-'<div class="fi">'++(i+1)+'. '+x.name+' ('+(x.size/1024/1024).toFixed(1)+'MB)</div>').join('');
+'<div class="fi">'+(i+1)+'. '+x.name+' ('+(x.size/1024/1024).toFixed(1)+'MB)</div>').join('');
 document.getElementById('ub').disabled=!F.length;document.getElementById('dz').classList.toggle('ok',F.length>0)}
 let dz=document.getElementById('dz');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('ok')});
