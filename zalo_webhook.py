@@ -4039,12 +4039,21 @@ select { width:100%; padding:12px 16px; border:1.5px solid #334155; border-radiu
         <th>Flashcard</th>
         <th>Ngay tao</th>
         <th>Xoa</th>
+        <th>Thao tac</th>
       </tr>
     </thead>
     <tbody id="examBody">
-      <tr><td colspan="6" style="text-align:center;color:#64748B;padding:24px">Dang tai...</td></tr>
+      <tr><td colspan="7" style="text-align:center;color:#64748B;padding:24px">Dang tai...</td></tr>
     </tbody>
   </table>
+</div>
+
+<!-- Preview Modal -->
+<div id="previewModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;padding:20px">
+  <div style="background:#0F172A;border-radius:16px;border:1px solid #334155;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;position:relative;padding:24px">
+    <button onclick="closePreview()" style="position:sticky;top:0;float:right;padding:6px 12px;border:1px solid #334155;border-radius:8px;background:#1E293B;color:#94A3B8;cursor:pointer;font-size:14px;font-weight:700;z-index:10">✕ Dong</button>
+    <div id="previewContent"></div>
+  </div>
 </div>
 
 <script>
@@ -4172,7 +4181,7 @@ function loadExams() {
       // Update table
       var tbody = document.getElementById('examBody');
       if (exams.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#64748B;padding:24px">Chua co de thi nao. Hay upload file o tren!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748B;padding:24px">Chua co de thi nao. Hay upload file o tren!</td></tr>';
         return;
       }
 
@@ -4194,6 +4203,10 @@ function loadExams() {
           + '<td>' + flashBadge + '</td>'
           + '<td style="color:#64748B">' + date + '</td>'
           + '<td><button onclick="deleteExam(\'' + e.id + '\', \'' + (e.name || '').replace(/'/g, '') + '\')" style="padding:4px 10px;border:1px solid #EF4444;border-radius:6px;background:transparent;color:#EF4444;font-size:11px;cursor:pointer;font-weight:700">🗑️ Xoa</button></td>'
+          + '<td style="white-space:nowrap">'
+          + '<button onclick="renameExam(\'' + e.id + '\', \'' + (e.name || '').replace(/'/g, '') + '\')" style="padding:4px 8px;border:1px solid #F59E0B;border-radius:6px;background:transparent;color:#F59E0B;font-size:11px;cursor:pointer;font-weight:700;margin-right:4px">✏️</button>'
+          + '<button onclick="previewQuiz(\'' + e.id + '\')" style="padding:4px 8px;border:1px solid #10B981;border-radius:6px;background:transparent;color:#10B981;font-size:11px;cursor:pointer;font-weight:700">👁️</button>'
+          + '</td>'
           + '</tr>';
       }
       tbody.innerHTML = rows;
@@ -4209,15 +4222,85 @@ function deleteExam(id, name) {
   fetch('/api/admin/exams/' + id + '?key=' + API_KEY, { method: 'DELETE' })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data.ok) {
-        alert('Da xoa thanh cong!');
-        loadExams();
-      } else {
-        alert('Loi: ' + (data.error || 'Unknown'));
-      }
+      if (data.ok) { alert('Da xoa thanh cong!'); loadExams(); }
+      else { alert('Loi: ' + (data.error || 'Unknown')); }
     })
     .catch(function(err) { alert('Loi: ' + err.message); });
 }
+
+// === RENAME EXAM ===
+function renameExam(id, currentName) {
+  var newName = prompt('Doi ten de thi:', currentName);
+  if (!newName || newName.trim() === '' || newName === currentName) return;
+  fetch('/api/admin/exams/' + id + '/rename?key=' + API_KEY, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: newName.trim()})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.ok) { alert('Da doi ten thanh: ' + data.name); loadExams(); }
+    else { alert('Loi: ' + (data.error || 'Unknown')); }
+  })
+  .catch(function(err) { alert('Loi: ' + err.message); });
+}
+
+// === PREVIEW QUIZ ===
+function previewQuiz(id) {
+  var modal = document.getElementById('previewModal');
+  var content = document.getElementById('previewContent');
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:#94A3B8">Dang tai...</div>';
+  modal.style.display = 'flex';
+
+  fetch('/api/admin/exams/' + id + '/detail?key=' + API_KEY)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { content.innerHTML = '<div style="color:#EF4444;padding:20px">Loi: ' + data.error + '</div>'; return; }
+
+      var html = '<h3 style="color:#8B5CF6;margin-bottom:16px;font-size:18px">' + (data.name || 'De thi') + '</h3>';
+
+      // Quiz section
+      var quiz = data.quiz_questions || [];
+      html += '<div style="margin-bottom:20px"><strong style="color:#10B981">📝 Quiz: ' + quiz.length + ' cau</strong></div>';
+      for (var i = 0; i < quiz.length; i++) {
+        var q = quiz[i];
+        var qText = q.question || q.text || '?';
+        html += '<div style="background:#1E293B;border-radius:10px;padding:14px;margin-bottom:10px;border-left:3px solid #8B5CF6">';
+        html += '<div style="font-weight:700;margin-bottom:8px;font-size:13px;color:#E2E8F0"><span style="color:#8B5CF6">Cau ' + (i+1) + '.</span> ' + qText + '</div>';
+        var opts = q.options || [];
+        for (var j = 0; j < opts.length; j++) {
+          var isCorrect = j === q.correct;
+          var optText = typeof opts[j] === 'string' ? opts[j] : (opts[j].text || '');
+          html += '<div style="padding:4px 0 4px 12px;font-size:12px;color:' + (isCorrect ? '#10B981' : '#94A3B8') + ';font-weight:' + (isCorrect ? '700' : '400') + '">';
+          html += (isCorrect ? '✅ ' : '○ ') + optText;
+          html += '</div>';
+        }
+        if (q.explanation) {
+          html += '<div style="margin-top:6px;padding:8px;background:#0F172A;border-radius:6px;font-size:11px;color:#60A5FA">💡 ' + q.explanation + '</div>';
+        }
+        html += '</div>';
+      }
+
+      // Flashcard section
+      var flash = data.flashcards || [];
+      if (flash.length > 0) {
+        html += '<div style="margin:20px 0 12px"><strong style="color:#F59E0B">🃏 Flashcard: ' + flash.length + ' the</strong></div>';
+        for (var k = 0; k < Math.min(flash.length, 10); k++) {
+          var f = flash[k];
+          html += '<div style="background:#1E293B;border-radius:8px;padding:10px 14px;margin-bottom:6px;display:flex;gap:8px;font-size:12px">';
+          html += '<strong style="color:#FBBF24;white-space:nowrap">' + (f.front || '?') + ':</strong>';
+          html += '<span style="color:#94A3B8">' + (f.back || '') + '</span>';
+          html += '</div>';
+        }
+        if (flash.length > 10) html += '<div style="color:#64748B;font-size:11px;padding:4px">...va ' + (flash.length - 10) + ' the nua</div>';
+      }
+
+      content.innerHTML = html;
+    })
+    .catch(function(err) { content.innerHTML = '<div style="color:#EF4444;padding:20px">Loi: ' + err.message + '</div>'; });
+}
+
+function closePreview() { document.getElementById('previewModal').style.display = 'none'; }
 
 // Load on page start
 loadExams();
@@ -4235,13 +4318,56 @@ async def admin_delete_exam(doc_id: str, key: str = ""):
     try:
         if not supabase:
             return JSONResponse(content={"error": "No database"}, status_code=500)
-
-        # Only allow deleting admin docs
         result = supabase.table("documents").delete().eq("id", doc_id).eq("user_id", ADMIN_USER_ID).execute()
         logger.info("Admin deleted exam %s", doc_id)
         return JSONResponse(content={"ok": True, "deleted": doc_id})
     except Exception as exc:
         logger.error("Delete exam error: %s", exc)
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
+@app.put("/api/admin/exams/{doc_id}/rename")
+async def admin_rename_exam(doc_id: str, request: Request, key: str = ""):
+    """Admin: rename an exam."""
+    if key != ADMIN_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
+    try:
+        body = await request.json()
+        new_name = body.get("name", "").strip()
+        if not new_name:
+            return JSONResponse(content={"error": "Name is empty"}, status_code=400)
+        if not supabase:
+            return JSONResponse(content={"error": "No database"}, status_code=500)
+        supabase.table("documents").update({"name": new_name}).eq("id", doc_id).eq("user_id", ADMIN_USER_ID).execute()
+        logger.info("Admin renamed exam %s -> %s", doc_id, new_name)
+        return JSONResponse(content={"ok": True, "name": new_name})
+    except Exception as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/admin/exams/{doc_id}/detail")
+async def admin_exam_detail(doc_id: str, key: str = ""):
+    """Admin: get full quiz & flashcard data for preview."""
+    if key != ADMIN_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
+    try:
+        if not supabase:
+            return JSONResponse(content={"error": "No database"}, status_code=500)
+        result = supabase.table("documents").select(
+            "id, name, summary, quiz_questions, flashcards, timestamp"
+        ).eq("id", doc_id).eq("user_id", ADMIN_USER_ID).single().execute()
+        doc = result.data
+        if not doc:
+            return JSONResponse(content={"error": "Not found"}, status_code=404)
+        return JSONResponse(content={
+            "id": doc["id"],
+            "name": doc.get("name"),
+            "summary": doc.get("summary"),
+            "quiz_questions": doc.get("quiz_questions") or [],
+            "flashcards": doc.get("flashcards") or [],
+            "created_at": doc.get("timestamp"),
+        })
+    except Exception as exc:
         return JSONResponse(content={"error": str(exc)}, status_code=500)
 
 
