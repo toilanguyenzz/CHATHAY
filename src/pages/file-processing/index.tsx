@@ -475,7 +475,7 @@ function FileProcessingPage() {
           )}
         </Box>
 
-        {/* SOLVE PROBLEM SECTION — LOCKED IN DEMO */}
+        {/* SOLVE PROBLEM SECTION — OPEN FOR STUDENTS */}
         <Box style={{ position: "relative" }}>
           <Box
             style={{
@@ -490,7 +490,7 @@ function FileProcessingPage() {
               boxShadow: "0 8px 24px rgba(245,158,11,0.25)",
               transition: "all 0.2s",
             }}
-            onClick={() => DEMO_MODE ? lockFeature("solve") : solveCameraRef.current?.click()}
+            onClick={() => navigate("/solve-problem")}
           >
             <Box
               style={{
@@ -514,8 +514,8 @@ function FileProcessingPage() {
                 Chụp ảnh bài tập → AI giải từng bước, giải thích "tại sao"
               </Text>
             </Box>
-            <Box style={{ padding: "6px 12px", borderRadius: "var(--radius-full)", background: "#F59E0B", color: "white", fontSize: 11, fontWeight: 800 }}>
-              SẮP RA MẮT
+            <Box style={{ padding: "6px 12px", borderRadius: "var(--radius-full)", background: "#10B981", color: "white", fontSize: 11, fontWeight: 800 }}>
+              HOT 🔥
             </Box>
           </Box>
         </Box>
