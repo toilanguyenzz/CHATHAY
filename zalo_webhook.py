@@ -3990,7 +3990,7 @@ for(let f of F){try{let fd=new FormData();fd.append('file',f);fd.append('subject
 let r=await fetch('/api/admin/bulk-upload?key='+K,{method:'POST',body:fd});let j=await r.json();d++;
 let p=Math.round(d/t*100);document.getElementById('pf').style.width=p+'%';
 document.getElementById('pp').textContent=p+'%';document.getElementById('pt').textContent=d+'/'+t;
-if(r.ok)lg.innerHTML+='<div class="s">OK '+f.name+' -> '+j.quiz_count+' quiz, '+j.flashcard_count+' flash</div>';
+if(r.ok)lg.innerHTML+='<div class="s">OK '+f.name+' -> text:'+j.text_length+'chars (Quiz generating in background...)</div>';
 else lg.innerHTML+='<div class="e">ERR '+f.name+': '+j.error+'</div>'}
 catch(e){d++;lg.innerHTML+='<div class="e">ERR '+f.name+': '+e.message+'</div>'}lg.scrollTop=lg.scrollHeight}
 document.getElementById('pt').textContent='Done!';document.getElementById('ub').disabled=false;
@@ -4001,7 +4001,7 @@ setTimeout(()=>location.reload(),2000)}
 
 @app.post("/api/admin/bulk-upload")
 async def admin_bulk_upload(request: Request, key: str = ""):
-    """Admin: upload 1 file, extract text, generate quiz + flashcard, save as public."""
+    """Admin: upload 1 file, extract text fast, then generate quiz/flashcard in background."""
     if key != ADMIN_SECRET:
         return JSONResponse(content={"error": "Unauthorized"}, status_code=403)
 
@@ -4029,7 +4029,7 @@ async def admin_bulk_upload(request: Request, key: str = ""):
             f.write(content)
 
         try:
-            # Extract text
+            # Step 1: Extract text ONLY (fast, ~3-8s)
             doc_text = ""
             if file_type == "image":
                 doc_text = await extract_ocr_text(file_path) or ""
@@ -4057,33 +4057,6 @@ async def admin_bulk_upload(request: Request, key: str = ""):
             if not doc_text or len(doc_text) < 50:
                 return JSONResponse(content={"error": "Cannot extract text"}, status_code=400)
 
-            from prompts.study_prompts import GENERATE_QUIZ_PROMPT, GENERATE_FLASHCARD_PROMPT
-
-            quiz_questions = []
-            flashcards = []
-
-            # Generate Quiz
-            try:
-                quiz_prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:15000])
-                quiz_json_str = await _call_with_smart_routing(
-                    quiz_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
-                )
-                quiz_data = json.loads(quiz_json_str)
-                quiz_questions = quiz_data.get("questions", [])
-            except Exception as qe:
-                logger.warning("Admin quiz gen failed: %s", qe)
-
-            # Generate Flashcards
-            try:
-                flash_prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:15000])
-                flash_json_str = await _call_with_smart_routing(
-                    flash_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
-                )
-                flash_data = json.loads(flash_json_str)
-                flashcards = flash_data.get("flashcards", [])
-            except Exception as fe:
-                logger.warning("Admin flashcard gen failed: %s", fe)
-
             # Build display name
             subject_labels = {
                 "toan": "Toán", "ly": "Lý", "hoa": "Hóa", "sinh": "Sinh",
@@ -4094,6 +4067,7 @@ async def admin_bulk_upload(request: Request, key: str = ""):
             grade_str = f" Lớp {grade}" if grade else ""
             display_name = f"[{prefix}{grade_str}] {filename}"
 
+            # Step 2: Save document immediately (no quiz yet)
             doc_id = str(uuid.uuid4())
             save_document(
                 user_id=ADMIN_USER_ID,
@@ -4102,19 +4076,24 @@ async def admin_bulk_upload(request: Request, key: str = ""):
                 text=doc_text,
                 summary=f"Đề thi {prefix}",
                 doc_type=file_type,
-                flashcards=flashcards,
-                quiz_questions=quiz_questions
+                flashcards=[],
+                quiz_questions=[]
             )
-
             save_document_text_temp(ADMIN_USER_ID, doc_id, doc_text)
 
-            logger.info("✅ Admin upload: %s → %s quiz, %s flash", filename, len(quiz_questions), len(flashcards))
+            logger.info("✅ Admin fast-save: %s (text: %s chars). Generating quiz in background...", filename, len(doc_text))
+
+            # Step 3: Generate quiz/flashcard in BACKGROUND (avoid timeout)
+            asyncio.create_task(_admin_generate_study_content(doc_id, doc_text, filename))
 
             return JSONResponse(content={
                 "id": doc_id,
                 "name": display_name,
-                "quiz_count": len(quiz_questions),
-                "flashcard_count": len(flashcards),
+                "quiz_count": 0,
+                "flashcard_count": 0,
+                "text_length": len(doc_text),
+                "status": "processing",
+                "message": "Text extracted. Quiz & Flashcard generating in background (~30s)...",
             }, status_code=201)
 
         finally:
@@ -4127,6 +4106,50 @@ async def admin_bulk_upload(request: Request, key: str = ""):
     except Exception as exc:
         logger.error("Admin bulk upload error: %s", exc, exc_info=True)
         return JSONResponse(content={"error": str(exc)}, status_code=500)
+
+
+async def _admin_generate_study_content(doc_id: str, doc_text: str, filename: str):
+    """Background task: generate quiz + flashcard and update document."""
+    try:
+        from prompts.study_prompts import GENERATE_QUIZ_PROMPT, GENERATE_FLASHCARD_PROMPT
+
+        quiz_questions = []
+        flashcards = []
+
+        # Generate Quiz
+        try:
+            quiz_prompt = GENERATE_QUIZ_PROMPT.format(document_text=doc_text[:15000])
+            quiz_json_str = await _call_with_smart_routing(
+                quiz_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
+            )
+            quiz_data = json.loads(quiz_json_str)
+            quiz_questions = quiz_data.get("questions", [])
+        except Exception as qe:
+            logger.warning("Admin quiz gen failed for %s: %s", filename, qe)
+
+        # Generate Flashcards
+        try:
+            flash_prompt = GENERATE_FLASHCARD_PROMPT.format(document_text=doc_text[:15000])
+            flash_json_str = await _call_with_smart_routing(
+                flash_prompt, text_length=len(doc_text), max_tokens=16384, response_json=True
+            )
+            flash_data = json.loads(flash_json_str)
+            flashcards = flash_data.get("flashcards", [])
+        except Exception as fe:
+            logger.warning("Admin flashcard gen failed for %s: %s", filename, fe)
+
+        # Update document with generated content
+        if supabase and (quiz_questions or flashcards):
+            supabase.table("documents").update({
+                "quiz_questions": quiz_questions,
+                "flashcards": flashcards,
+            }).eq("id", doc_id).execute()
+
+        logger.info("✅ Admin background gen done: %s → %s quiz, %s flash",
+                     filename, len(quiz_questions), len(flashcards))
+
+    except Exception as exc:
+        logger.error("Admin background gen error for %s: %s", filename, exc, exc_info=True)
 
 
 @app.get("/api/miniapp/public-exams")
