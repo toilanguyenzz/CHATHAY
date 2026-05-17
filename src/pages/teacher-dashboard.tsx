@@ -5,15 +5,12 @@ import { apiClient } from "../services/api";
 import { IconChevronLeft, IconTrophy, IconUsers, IconTarget, IconLink } from "../components/icons";
 
 interface QuizResult {
-  user_id: string;
-  display_name: string;
-  avatar_url?: string;
+  student_name: string;
+  student_phone: string;
   score: number;
   total: number;
   percentage: number;
-  time_seconds: number;
   completed_at: string;
-  attempt_number: number;
 }
 
 interface TeacherDashboardPageProps {
@@ -75,6 +72,20 @@ function TeacherDashboardPage({ quizId }: TeacherDashboardPageProps) {
     if (percentage >= 60) return "#3B82F6";
     if (percentage >= 40) return "#F59E0B";
     return "#EF4444";
+  };
+
+  const formatDate = (dateStr: string) => {
+    try {
+      const date = new Date(dateStr);
+      return date.toLocaleString("vi-VN", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    } catch {
+      return dateStr;
+    }
   };
 
   const generateShareCode = async () => {
@@ -318,27 +329,11 @@ function TeacherDashboardPage({ quizId }: TeacherDashboardPageProps) {
                             color: "var(--color-text-primary)",
                           }}
                         >
-                          {result.display_name}
+                          {result.student_name}
                         </Text>
-                        <Box style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                          <Box
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 2,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              background: "rgba(99,102,241,0.1)",
-                            }}
-                          >
-                            <Text style={{ fontSize: 9, fontWeight: 700, color: "#6366F1" }}>
-                              {formatTime(result.time_seconds)}
-                            </Text>
-                          </Box>
-                          <Text style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 600 }}>
-                            Lần {result.attempt_number}
-                          </Text>
-                        </Box>
+                        <Text style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 600, marginTop: 2 }}>
+                          {result.student_phone}
+                        </Text>
                       </Box>
 
                       {/* Score */}
@@ -355,11 +350,11 @@ function TeacherDashboardPage({ quizId }: TeacherDashboardPageProps) {
                         <Text
                           style={{
                             fontSize: 11,
-                            fontWeight: 700,
-                            color: getGradeColor(result.percentage),
+                            fontWeight: 600,
+                            color: "var(--color-text-tertiary)",
                           }}
                         >
-                          {Math.round(result.percentage)}%
+                          {formatDate(result.completed_at)}
                         </Text>
                       </Box>
                     </Box>
