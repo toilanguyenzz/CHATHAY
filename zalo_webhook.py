@@ -3915,88 +3915,297 @@ async def admin_page(key: str = ""):
         return HTMLResponse("<h1>403 Forbidden</h1>", status_code=403)
 
     html = """<!DOCTYPE html>
-<html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admin Upload | Chat Hay</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:#0F172A;color:#E2E8F0;min-height:100vh}
-.c{max-width:800px;margin:0 auto;padding:24px}
-h1{font-size:28px;font-weight:900;margin-bottom:8px;background:linear-gradient(135deg,#8B5CF6,#06B6D4);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sub{color:#94A3B8;font-size:14px;margin-bottom:24px}
-.fg{margin-bottom:16px}
-label{display:block;font-size:13px;font-weight:700;color:#94A3B8;margin-bottom:6px}
-select,input[type=text]{width:100%;padding:12px 16px;border:1.5px solid #334155;border-radius:12px;background:#1E293B;color:#E2E8F0;font-size:15px;outline:none}
-.fz{border:2px dashed #334155;border-radius:16px;padding:32px;text-align:center;cursor:pointer;background:#1E293B}
-.fz:hover{border-color:#8B5CF6;background:#1E1B4B}
-.fz.ok{border-color:#10B981;background:#064E3B}
-.fl{margin-top:12px;font-size:13px;color:#94A3B8;max-height:200px;overflow-y:auto}
-.fi{padding:8px 12px;background:#1E293B;border-radius:8px;margin-bottom:4px}
-.btn{padding:14px 28px;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;width:100%;margin-top:16px;background:linear-gradient(135deg,#8B5CF6,#7C3AED);color:white}
-.btn:disabled{opacity:.5;cursor:not-allowed}
-.pg{margin-top:16px;padding:16px;border-radius:12px;background:#1E293B;border:1px solid #334155}
-.pb{height:6px;border-radius:3px;background:#334155;overflow:hidden;margin-top:8px}
-.pf{height:100%;border-radius:3px;background:linear-gradient(90deg,#8B5CF6,#06B6D4);transition:width .3s}
-.log{margin-top:8px;font-size:12px;max-height:150px;overflow-y:auto}
-.log .s{color:#10B981;padding:4px 0}.log .e{color:#EF4444;padding:4px 0}
-.st{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px}
-.st>div{padding:16px;border-radius:12px;background:#1E293B;border:1px solid #334155;text-align:center}
-.sn{font-size:28px;font-weight:900;color:#8B5CF6}.sl{font-size:12px;color:#64748B;margin-top:4px}
-</style></head><body><div class="c">
-<h1>Admin Upload De Thi</h1><p class="sub">Upload hang loat de thi cho Kho De Thi cong khai</p>
-<div class="st" id="stats"><div><div class="sn" id="te">--</div><div class="sl">Tong de</div></div>
-<div><div class="sn" id="tq">--</div><div class="sl">Co Quiz</div></div>
-<div><div class="sn" id="tf">--</div><div class="sl">Co Flashcard</div></div></div>
-<div class="fg"><label>Mon hoc</label><select id="subj">
-<option value="toan">Toan</option><option value="ly">Ly</option><option value="hoa">Hoa</option>
-<option value="sinh">Sinh</option><option value="su">Lich Su</option><option value="dia">Dia Ly</option>
-<option value="anh" selected>Tieng Anh</option><option value="van">Ngu Van</option>
-<option value="gdcd">GDCD</option><option value="tin">Tin Hoc</option><option value="khac">Khac</option>
-</select></div>
-<div class="fg"><label>Lop</label><select id="grade">
-<option value="">-- Khong chon --</option><option value="10">Lop 10</option>
-<option value="11">Lop 11</option><option value="12" selected>Lop 12</option>
-<option value="9">Lop 9</option><option value="dh">Dai Hoc</option></select></div>
-<div class="fz" id="dz" onclick="document.getElementById('fi').click()">
-<div style="font-size:48px;margin-bottom:12px">📁</div>
-<div style="font-size:16px;font-weight:700">Keo tha hoac bam chon file</div>
-<div style="font-size:13px;color:#64748B;margin-top:8px">PDF, Word, Anh — Chon nhieu file</div>
-<input type="file" id="fi" multiple accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp" style="display:none" onchange="hf(this.files)">
-</div><div class="fl" id="fl"></div>
-<button class="btn" id="ub" onclick="go()" disabled>Upload & Tao Quiz</button>
-<div class="pg" id="pa" style="display:none">
-<div style="display:flex;justify-content:space-between;font-size:13px"><span id="pt">...</span><span id="pp">0%</span></div>
-<div class="pb"><div class="pf" id="pf" style="width:0%"></div></div>
-<div class="log" id="lg"></div></div></div>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',system-ui,sans-serif; background:#0F172A; color:#E2E8F0; min-height:100vh; }
+.container { max-width:900px; margin:0 auto; padding:24px; }
+h1 { font-size:28px; font-weight:900; margin-bottom:8px;
+     background:linear-gradient(135deg,#8B5CF6,#06B6D4);
+     -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+h2 { font-size:20px; font-weight:800; margin:32px 0 16px; color:#8B5CF6; }
+.sub { color:#94A3B8; font-size:14px; margin-bottom:24px; }
+.fg { margin-bottom:16px; }
+label { display:block; font-size:13px; font-weight:700; color:#94A3B8; margin-bottom:6px; }
+select { width:100%; padding:12px 16px; border:1.5px solid #334155; border-radius:12px;
+         background:#1E293B; color:#E2E8F0; font-size:15px; outline:none; }
+.dropzone { border:2px dashed #334155; border-radius:16px; padding:40px;
+            text-align:center; cursor:pointer; background:#1E293B; transition:all 0.2s; }
+.dropzone:hover { border-color:#8B5CF6; background:#1E1B4B; }
+.dropzone.active { border-color:#10B981; background:#064E3B; }
+.file-list { margin-top:12px; font-size:13px; color:#94A3B8; max-height:200px; overflow-y:auto; }
+.file-item { padding:8px 12px; background:#1E293B; border-radius:8px; margin-bottom:4px;
+             border:1px solid #334155; }
+.btn { padding:14px 28px; border:none; border-radius:12px; font-size:15px; font-weight:700;
+       cursor:pointer; width:100%; margin-top:16px;
+       background:linear-gradient(135deg,#8B5CF6,#7C3AED); color:white; transition:all 0.2s; }
+.btn:hover { transform:translateY(-1px); box-shadow:0 4px 16px rgba(139,92,246,0.4); }
+.btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
+.progress-area { margin-top:16px; padding:16px; border-radius:12px;
+                 background:#1E293B; border:1px solid #334155; }
+.progress-bar { height:6px; border-radius:3px; background:#334155; overflow:hidden; margin-top:8px; }
+.progress-fill { height:100%; border-radius:3px; background:linear-gradient(90deg,#8B5CF6,#06B6D4);
+                 transition:width 0.3s; width:0%; }
+.log { margin-top:8px; font-size:12px; max-height:200px; overflow-y:auto; }
+.log-ok { color:#10B981; padding:4px 0; }
+.log-err { color:#EF4444; padding:4px 0; }
+.stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:24px; }
+.stats > div { padding:16px; border-radius:12px; background:#1E293B;
+               border:1px solid #334155; text-align:center; }
+.stat-num { font-size:28px; font-weight:900; color:#8B5CF6; }
+.stat-label { font-size:12px; color:#64748B; margin-top:4px; }
+/* Exam Table */
+.exam-table { width:100%; border-collapse:collapse; margin-top:12px; }
+.exam-table th { text-align:left; padding:10px 12px; font-size:12px; font-weight:700;
+                 color:#64748B; border-bottom:2px solid #334155; text-transform:uppercase; }
+.exam-table td { padding:10px 12px; font-size:13px; border-bottom:1px solid #1E293B; }
+.exam-table tr:hover td { background:#1E293B; }
+.badge { display:inline-block; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700; }
+.badge-ok { background:#064E3B; color:#10B981; }
+.badge-wait { background:#422006; color:#F59E0B; }
+.badge-no { background:#1C1917; color:#64748B; }
+.refresh-btn { padding:8px 16px; border:1px solid #334155; border-radius:8px; background:#1E293B;
+               color:#94A3B8; font-size:12px; cursor:pointer; float:right; }
+.refresh-btn:hover { border-color:#8B5CF6; color:#E2E8F0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📚 Admin Upload De Thi</h1>
+  <p class="sub">Upload de thi cho Kho De Thi cong khai. Sau khi upload, Quiz & Flashcard se duoc tao tu dong.</p>
+
+  <div class="stats" id="stats">
+    <div><div class="stat-num" id="stat-total">--</div><div class="stat-label">Tong de</div></div>
+    <div><div class="stat-num" id="stat-quiz">--</div><div class="stat-label">Co Quiz</div></div>
+    <div><div class="stat-num" id="stat-flash">--</div><div class="stat-label">Co Flashcard</div></div>
+  </div>
+
+  <div class="fg">
+    <label>Mon hoc</label>
+    <select id="subject">
+      <option value="toan">Toan</option><option value="ly">Ly</option>
+      <option value="hoa">Hoa</option><option value="sinh">Sinh</option>
+      <option value="su">Lich Su</option><option value="dia">Dia Ly</option>
+      <option value="anh" selected>Tieng Anh</option><option value="van">Ngu Van</option>
+      <option value="gdcd">GDCD</option><option value="tin">Tin Hoc</option>
+      <option value="khac">Khac</option>
+    </select>
+  </div>
+
+  <div class="fg">
+    <label>Lop</label>
+    <select id="grade">
+      <option value="">-- Khong chon --</option><option value="10">Lop 10</option>
+      <option value="11">Lop 11</option><option value="12" selected>Lop 12</option>
+      <option value="9">Lop 9</option><option value="dh">Dai Hoc</option>
+    </select>
+  </div>
+
+  <div class="dropzone" id="dropzone">
+    <div style="font-size:48px;margin-bottom:12px">📁</div>
+    <div style="font-size:16px;font-weight:700">Bam vao day de chon file</div>
+    <div style="font-size:13px;color:#64748B;margin-top:8px">PDF, Word, Anh — Chon nhieu file cung luc</div>
+    <input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp"
+           style="display:none">
+  </div>
+
+  <div class="file-list" id="fileList"></div>
+
+  <button class="btn" id="uploadBtn" disabled>⬆️ Upload & Tao Quiz</button>
+
+  <div class="progress-area" id="progressArea" style="display:none">
+    <div style="display:flex;justify-content:space-between;font-size:13px">
+      <span id="progressText">Dang xu ly...</span>
+      <span id="progressPercent">0%</span>
+    </div>
+    <div class="progress-bar">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div class="log" id="logArea"></div>
+  </div>
+
+  <h2>📋 Danh sach de thi da upload</h2>
+  <button class="refresh-btn" onclick="loadExams()">🔄 Lam moi</button>
+  <table class="exam-table" id="examTable">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Ten de thi</th>
+        <th>Quiz</th>
+        <th>Flashcard</th>
+        <th>Ngay tao</th>
+      </tr>
+    </thead>
+    <tbody id="examBody">
+      <tr><td colspan="5" style="text-align:center;color:#64748B;padding:24px">Dang tai...</td></tr>
+    </tbody>
+  </table>
+</div>
+
 <script>
-const K='""" + ADMIN_SECRET + """';let F=[];
-fetch('/api/miniapp/public-exams').then(r=>r.json()).then(d=>{
-let a=Array.isArray(d)?d:[];document.getElementById('te').textContent=a.length;
-document.getElementById('tq').textContent=a.filter(e=>e.has_quiz).length;
-document.getElementById('tf').textContent=a.filter(e=>e.has_flashcards).length}).catch(()=>{});
-function hf(f){F=Array.from(f);document.getElementById('fl').innerHTML=F.map((x,i)=>
-'<div class="fi">'+(i+1)+'. '+x.name+' ('+(x.size/1024/1024).toFixed(1)+'MB)</div>').join('');
-document.getElementById('ub').disabled=!F.length;document.getElementById('dz').classList.toggle('ok',F.length>0)}
-let dz=document.getElementById('dz');
-dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('ok')});
-dz.addEventListener('dragleave',()=>dz.classList.remove('ok'));
-dz.addEventListener('drop',e=>{e.preventDefault();hf(e.dataTransfer.files)});
-async function go(){
-let s=document.getElementById('subj').value,g=document.getElementById('grade').value;
-document.getElementById('ub').disabled=true;
-let pa=document.getElementById('pa');pa.style.display='block';
-let lg=document.getElementById('lg');lg.innerHTML='';
-let d=0,t=F.length;
-for(let f of F){try{let fd=new FormData();fd.append('file',f);fd.append('subject',s);fd.append('grade',g);
-let r=await fetch('/api/admin/bulk-upload?key='+K,{method:'POST',body:fd});let j=await r.json();d++;
-let p=Math.round(d/t*100);document.getElementById('pf').style.width=p+'%';
-document.getElementById('pp').textContent=p+'%';document.getElementById('pt').textContent=d+'/'+t;
-if(r.ok)lg.innerHTML+='<div class="s">OK '+f.name+' -> text:'+j.text_length+'chars (Quiz generating in background...)</div>';
-else lg.innerHTML+='<div class="e">ERR '+f.name+': '+j.error+'</div>'}
-catch(e){d++;lg.innerHTML+='<div class="e">ERR '+f.name+': '+e.message+'</div>'}lg.scrollTop=lg.scrollHeight}
-document.getElementById('pt').textContent='✅ Xong! '+d+'/'+t+' file da upload. Quiz dang duoc tao (doi ~30s roi F5 de xem).';
-document.getElementById('ub').disabled=false;document.getElementById('ub').textContent='🔄 Tai lai trang';
-document.getElementById('ub').onclick=()=>location.reload()}
-</script></body></html>"""
+const API_KEY = '""" + ADMIN_SECRET + """';
+let selectedFiles = [];
+
+// === FILE SELECTION ===
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const uploadBtn = document.getElementById('uploadBtn');
+
+dropzone.addEventListener('click', function() {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', function() {
+  handleFiles(this.files);
+});
+
+dropzone.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  this.classList.add('active');
+});
+
+dropzone.addEventListener('dragleave', function() {
+  this.classList.remove('active');
+});
+
+dropzone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  this.classList.remove('active');
+  handleFiles(e.dataTransfer.files);
+});
+
+function handleFiles(files) {
+  selectedFiles = Array.from(files);
+  if (selectedFiles.length === 0) return;
+
+  var html = '';
+  for (var i = 0; i < selectedFiles.length; i++) {
+    var f = selectedFiles[i];
+    var sizeMB = (f.size / 1024 / 1024).toFixed(1);
+    html += '<div class="file-item">📄 ' + (i+1) + '. ' + f.name + ' (' + sizeMB + ' MB)</div>';
+  }
+  fileList.innerHTML = html;
+  uploadBtn.disabled = false;
+  dropzone.classList.add('active');
+}
+
+// === UPLOAD ===
+uploadBtn.addEventListener('click', async function() {
+  if (selectedFiles.length === 0) return;
+
+  var subject = document.getElementById('subject').value;
+  var grade = document.getElementById('grade').value;
+
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = '⏳ Dang upload...';
+
+  var progressArea = document.getElementById('progressArea');
+  progressArea.style.display = 'block';
+
+  var logArea = document.getElementById('logArea');
+  logArea.innerHTML = '';
+
+  var done = 0;
+  var total = selectedFiles.length;
+
+  for (var i = 0; i < selectedFiles.length; i++) {
+    var f = selectedFiles[i];
+    try {
+      var fd = new FormData();
+      fd.append('file', f);
+      fd.append('subject', subject);
+      fd.append('grade', grade);
+
+      var resp = await fetch('/api/admin/bulk-upload?key=' + API_KEY, {
+        method: 'POST',
+        body: fd
+      });
+
+      var result = await resp.json();
+      done++;
+
+      var pct = Math.round(done / total * 100);
+      document.getElementById('progressFill').style.width = pct + '%';
+      document.getElementById('progressPercent').textContent = pct + '%';
+      document.getElementById('progressText').textContent = done + '/' + total;
+
+      if (resp.ok) {
+        logArea.innerHTML += '<div class="log-ok">✅ ' + f.name + ' — ' + result.text_length + ' ky tu. Quiz dang tao...</div>';
+      } else {
+        logArea.innerHTML += '<div class="log-err">❌ ' + f.name + ': ' + result.error + '</div>';
+      }
+    } catch(err) {
+      done++;
+      logArea.innerHTML += '<div class="log-err">❌ ' + f.name + ': ' + err.message + '</div>';
+    }
+    logArea.scrollTop = logArea.scrollHeight;
+  }
+
+  document.getElementById('progressText').textContent = '✅ Xong! ' + done + '/' + total + ' file. Quiz dang duoc AI tao (~30-60s).';
+  uploadBtn.textContent = '✅ Upload xong! Doi 30s roi bam "Lam moi" ben duoi';
+  uploadBtn.disabled = true;
+
+  // Auto-refresh the exam table after 30 seconds
+  setTimeout(function() { loadExams(); }, 30000);
+  // Also refresh sooner at 10s for quick text-only ones
+  setTimeout(function() { loadExams(); }, 10000);
+});
+
+// === LOAD EXAMS TABLE ===
+function loadExams() {
+  fetch('/api/miniapp/public-exams')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var exams = Array.isArray(data) ? data : [];
+
+      // Update stats
+      document.getElementById('stat-total').textContent = exams.length;
+      document.getElementById('stat-quiz').textContent = exams.filter(function(e) { return e.has_quiz; }).length;
+      document.getElementById('stat-flash').textContent = exams.filter(function(e) { return e.has_flashcards; }).length;
+
+      // Update table
+      var tbody = document.getElementById('examBody');
+      if (exams.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#64748B;padding:24px">Chua co de thi nao. Hay upload file o tren!</td></tr>';
+        return;
+      }
+
+      var rows = '';
+      for (var i = 0; i < exams.length; i++) {
+        var e = exams[i];
+        var quizBadge = e.has_quiz
+          ? '<span class="badge badge-ok">' + e.quiz_count + ' cau</span>'
+          : '<span class="badge badge-wait">⏳ Dang tao...</span>';
+        var flashBadge = e.has_flashcards
+          ? '<span class="badge badge-ok">' + e.flashcard_count + ' the</span>'
+          : '<span class="badge badge-wait">⏳ Dang tao...</span>';
+        var date = e.created_at ? new Date(e.created_at).toLocaleDateString('vi-VN') : '--';
+
+        rows += '<tr>'
+          + '<td>' + (i+1) + '</td>'
+          + '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (e.name || 'De thi') + '</td>'
+          + '<td>' + quizBadge + '</td>'
+          + '<td>' + flashBadge + '</td>'
+          + '<td style="color:#64748B">' + date + '</td>'
+          + '</tr>';
+      }
+      tbody.innerHTML = rows;
+    })
+    .catch(function(err) {
+      console.error('Load exams error:', err);
+    });
+}
+
+// Load on page start
+loadExams();
+</script>
+</body>
+</html>"""
     return HTMLResponse(html)
 
 
