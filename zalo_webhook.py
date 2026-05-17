@@ -4277,18 +4277,20 @@ async def admin_bulk_upload(request: Request, key: str = ""):
             grade_str = f" Lớp {grade}" if grade else ""
             display_name = f"[{prefix}{grade_str}] {filename}"
 
-            # Step 2: Save document immediately (no quiz yet)
+            # Step 2: Save directly to Supabase (NOT via save_document which deletes text & limits to 5 docs)
             doc_id = str(uuid.uuid4())
-            save_document(
-                user_id=ADMIN_USER_ID,
-                doc_id=doc_id,
-                name=display_name,
-                text=doc_text,
-                summary=f"Đề thi {prefix}",
-                doc_type=file_type,
-                flashcards=[],
-                quiz_questions=[]
-            )
+            if supabase:
+                supabase.table("documents").insert({
+                    "id": doc_id,
+                    "user_id": ADMIN_USER_ID,
+                    "name": display_name,
+                    "text": doc_text[:500],  # Keep first 500 chars for reference
+                    "summary": f"Đề thi {prefix}",
+                    "doc_type": file_type,
+                    "flashcards": [],
+                    "quiz_questions": [],
+                    "timestamp": time.time(),
+                }).execute()
             save_document_text_temp(ADMIN_USER_ID, doc_id, doc_text)
 
             logger.info("✅ Admin fast-save: %s (text: %s chars). Generating quiz in background...", filename, len(doc_text))
