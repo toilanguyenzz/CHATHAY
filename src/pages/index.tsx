@@ -40,6 +40,9 @@ function HubPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [publicExams, setPublicExams] = useState<any[]>([]);
+  const [hiddenExams, setHiddenExams] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("ch_hidden_exams") || "[]"); } catch { return []; }
+  });
 
   const loadData = () => {
     if (!user_id) { setLoading(false); return; }
@@ -291,58 +294,101 @@ function HubPage() {
                 <Text style={{ fontSize: 13, fontWeight: 800, color: "#6B7280", letterSpacing: "0.06em" }}>
                   📚 KHO ĐỀ THI
                 </Text>
-                <Box onClick={() => navigate("/file-processing")} style={{
-                  padding: "4px 12px", borderRadius: 12,
-                  background: "#EEF2FF", cursor: "pointer",
-                }}>
-                  <Text style={{ fontSize: 11, fontWeight: 700, color: "#6366F1" }}>Xem tất cả →</Text>
+                <Box style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {hiddenExams.length > 0 && (
+                    <Box onClick={() => { setHiddenExams([]); localStorage.removeItem("ch_hidden_exams"); }} style={{
+                      padding: "4px 10px", borderRadius: 12,
+                      background: "#FEF3C7", cursor: "pointer",
+                    }}>
+                      <Text style={{ fontSize: 10, fontWeight: 700, color: "#92400E" }}>👁️ Hiện lại ({hiddenExams.length})</Text>
+                    </Box>
+                  )}
+                  <Box onClick={() => navigate("/file-processing")} style={{
+                    padding: "4px 12px", borderRadius: 12,
+                    background: "#EEF2FF", cursor: "pointer",
+                  }}>
+                    <Text style={{ fontSize: 11, fontWeight: 700, color: "#6366F1" }}>Xem tất cả →</Text>
+                  </Box>
                 </Box>
               </Box>
-              {publicExams.length > 0 ? (
-                <Box style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {publicExams.filter((e: any) => e.has_quiz).slice(0, 5).map((exam: any) => (
-                    <Box key={exam.id} onClick={() => navigate(`/quiz?doc_id=${exam.id}`)} style={{
-                      padding: "14px 16px", borderRadius: 16,
-                      background: "white", border: "1px solid #E5E7EB",
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-                      display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
-                      transition: "all 0.15s",
-                    }}>
-                      <Box style={{
-                        width: 42, height: 42, borderRadius: 12,
-                        background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        flexShrink: 0,
-                      }}>
-                        <Text style={{ fontSize: 20 }}>📝</Text>
-                      </Box>
-                      <Box style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={{
-                          fontSize: 13, fontWeight: 700, color: "#1F2937",
-                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        }}>{exam.name}</Text>
-                        <Text style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
-                          {exam.quiz_count} câu quiz • {exam.flashcard_count} flashcard
-                        </Text>
-                      </Box>
-                      <Box style={{
-                        padding: "6px 14px", borderRadius: 20,
-                        background: "linear-gradient(135deg, #8B5CF6, #7C3AED)",
-                        color: "white", fontSize: 11, fontWeight: 800,
-                        flexShrink: 0,
-                      }}>Làm bài</Box>
+              {(() => {
+                const visibleExams = publicExams.filter((e: any) => e.has_quiz && !hiddenExams.includes(e.id));
+                if (visibleExams.length > 0) {
+                  return (
+                    <Box style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {visibleExams.slice(0, 5).map((exam: any) => (
+                        <Box key={exam.id} style={{
+                          padding: "14px 16px", borderRadius: 16,
+                          background: "white", border: "1px solid #E5E7EB",
+                          boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                          display: "flex", alignItems: "center", gap: 12,
+                          transition: "all 0.15s",
+                        }}>
+                          <Box onClick={() => navigate(`/quiz?doc_id=${exam.id}`)} style={{
+                            display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0, cursor: "pointer",
+                          }}>
+                            <Box style={{
+                              width: 42, height: 42, borderRadius: 12,
+                              background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              flexShrink: 0,
+                            }}>
+                              <Text style={{ fontSize: 20 }}>📝</Text>
+                            </Box>
+                            <Box style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={{
+                                fontSize: 13, fontWeight: 700, color: "#1F2937",
+                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                              }}>{exam.name}</Text>
+                              <Text style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
+                                {exam.quiz_count} câu quiz • {exam.flashcard_count} flashcard
+                              </Text>
+                            </Box>
+                          </Box>
+                          <Box onClick={() => navigate(`/quiz?doc_id=${exam.id}`)} style={{
+                            padding: "6px 14px", borderRadius: 20,
+                            background: "linear-gradient(135deg, #8B5CF6, #7C3AED)",
+                            color: "white", fontSize: 11, fontWeight: 800,
+                            flexShrink: 0, cursor: "pointer",
+                          }}>Làm bài</Box>
+                          <Box onClick={(e) => {
+                            e.stopPropagation();
+                            const newHidden = [...hiddenExams, exam.id];
+                            setHiddenExams(newHidden);
+                            localStorage.setItem("ch_hidden_exams", JSON.stringify(newHidden));
+                          }} style={{
+                            width: 28, height: 28, borderRadius: 8,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            cursor: "pointer", flexShrink: 0,
+                            color: "#9CA3AF", fontSize: 14,
+                          }}>✕</Box>
+                        </Box>
+                      ))}
                     </Box>
-                  ))}
-                </Box>
-              ) : (
-                <Box style={{
-                  padding: 20, textAlign: "center", borderRadius: 16,
-                  background: "white", border: "1px solid #E5E7EB",
-                }}>
-                  <Text style={{ fontSize: 28, marginBottom: 6 }}>📭</Text>
-                  <Text style={{ fontSize: 13, fontWeight: 700, color: "#6B7280" }}>Đang cập nhật đề thi...</Text>
-                </Box>
-              )}
+                  );
+                } else if (publicExams.length > 0 && hiddenExams.length > 0) {
+                  return (
+                    <Box style={{
+                      padding: 20, textAlign: "center", borderRadius: 16,
+                      background: "white", border: "1px solid #E5E7EB",
+                    }}>
+                      <Text style={{ fontSize: 28, marginBottom: 6 }}>🙈</Text>
+                      <Text style={{ fontSize: 13, fontWeight: 700, color: "#6B7280" }}>Bạn đã ẩn hết đề thi</Text>
+                      <Text style={{ fontSize: 12, color: "#9CA3AF", marginTop: 4 }}>Bấm "👁️ Hiện lại" ở trên để xem lại</Text>
+                    </Box>
+                  );
+                } else {
+                  return (
+                    <Box style={{
+                      padding: 20, textAlign: "center", borderRadius: 16,
+                      background: "white", border: "1px solid #E5E7EB",
+                    }}>
+                      <Text style={{ fontSize: 28, marginBottom: 6 }}>📭</Text>
+                      <Text style={{ fontSize: 13, fontWeight: 700, color: "#6B7280" }}>Đang cập nhật đề thi...</Text>
+                    </Box>
+                  );
+                }
+              })()}
             </Box>
 
             {/* ═══ TIP ═══ */}
