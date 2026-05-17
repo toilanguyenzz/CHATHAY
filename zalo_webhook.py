@@ -4370,8 +4370,8 @@ async def get_public_exams():
     try:
         if supabase:
             result = supabase.table("documents").select(
-                "id, name, doc_type, created_at, quiz_questions, flashcards"
-            ).eq("user_id", ADMIN_USER_ID).order("created_at", desc=True).execute()
+                "id, name, doc_type, timestamp, quiz_questions, flashcards"
+            ).eq("user_id", ADMIN_USER_ID).order("timestamp", desc=True).execute()
 
             logger.info("Public exams query: found %s docs for user_id=%s", len(result.data or []), ADMIN_USER_ID)
 
@@ -4383,7 +4383,7 @@ async def get_public_exams():
                     "id": doc["id"],
                     "name": doc.get("name", "Đề thi"),
                     "doc_type": doc.get("doc_type", "pdf"),
-                    "created_at": doc.get("created_at"),
+                    "created_at": doc.get("timestamp"),
                     "quiz_count": len(quiz_qs),
                     "flashcard_count": len(flash),
                     "has_quiz": len(quiz_qs) > 0,
@@ -4409,13 +4409,13 @@ async def admin_debug_docs(key: str = ""):
 
         # Check ALL documents for admin user
         result = supabase.table("documents").select(
-            "id, user_id, name, doc_type, created_at"
+            "id, user_id, name, doc_type, timestamp"
         ).eq("user_id", ADMIN_USER_ID).execute()
 
         # Also check recent documents from ANY user to see if insert worked
         recent = supabase.table("documents").select(
-            "id, user_id, name, created_at"
-        ).order("created_at", desc=True).limit(5).execute()
+            "id, user_id, name, timestamp"
+        ).order("timestamp", desc=True).limit(5).execute()
 
         return JSONResponse(content={
             "admin_user_id": ADMIN_USER_ID,
